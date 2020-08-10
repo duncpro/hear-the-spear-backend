@@ -168,7 +168,6 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
  * Store the new token in the database.
  * @param uid The Firebase Auth UID that represents the user.
  */
-// @ts-ignore
 const renewSpotifyAuthToken = async (uid: string) => {
   functions.logger.info('Attempting to renew Spotify authorization for user: ' + uid);
 
@@ -243,6 +242,15 @@ const renewSpotifyAuthToken = async (uid: string) => {
  * If there is a pre-existing record, it is updated, otherwise, a new record is created.
  */
 export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthUID: string) => {
+  // Make sure that the user didn't bypass our front-end email validation.
+  // Only FSU students are allowed to participate.
+  // If they made it this far in the auth process without an FSU email, then they are acting maliciously.
+  // Do not proceed.
+  const firebaseAuthUser = await admin.auth().getUser(firebaseAuthUID);
+  if (!(firebaseAuthUser.email!.endsWith('@my.fsu.edu') || firebaseAuthUser.email!.endsWith('@fsu.edu'))) {
+    return;
+  }
+
   // This will contain all the parameters that Spotify expects us to provide
   // when requesting a fresh auth token.
   const reqParams = new URLSearchParams();
