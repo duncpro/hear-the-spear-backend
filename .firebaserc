@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "default": "hear-the-spear-2-dev",
+    "dev": "hear-the-spear-2-dev",
+    "prod": "hearthespear-172d0"
+  }
+}

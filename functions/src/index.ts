@@ -5,11 +5,6 @@ import axios from 'axios';
 import FieldValue = admin.firestore.FieldValue;
 import { getEnvironment } from "./environment";
 
-/**
- * The HTTP URL of the spotifyCredentialsReceiver.
- * Spotify will ping this URL with the result of any authorization operations.
- */
-
 admin.initializeApp();
 
 const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
