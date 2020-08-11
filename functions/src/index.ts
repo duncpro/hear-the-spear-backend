@@ -218,7 +218,7 @@ const renewSpotifyAuthToken = async (uid: string) => {
     // Store the expiration date so we know when we need to renew our token again.
     spotifyAccessTokenExpires: response.data['expires_in'] * 1000 + Date.now(),
     // The old refresh token has been used up, delete it.
-    refreshToken: FieldValue.delete()
+    spotifyRefreshToken: FieldValue.delete()
   };
   // If we were issued a refresh token, store it as well.
   // Spotify does not guarantee a new refresh token however.
@@ -227,7 +227,7 @@ const renewSpotifyAuthToken = async (uid: string) => {
   // the system.
   if (response.data['refresh_token']) {
     // Replace the old refresh token with the new one we were just issued.
-    userRecordUpdate.refreshToken = response.data['refresh_token'];
+    userRecordUpdate.spotifyRefreshToken = response.data['refresh_token'];
   }
   // Submit database change.
   await admin.firestore().collection('users').doc(uid)
@@ -287,7 +287,7 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
     spotifyAccessTokenExpires: response.data['expires_in'] * 1000 + Date.now(),
     // If the user is already authenticated, an old refresh token might be stored in the system.
     // We can delete it as it will most likely be replaced with a new one in a second.
-    refreshToken: FieldValue.delete()
+    spotifyRefreshToken: FieldValue.delete()
   };
   // If we were issued a refresh token, store it as well.
   // Spotify does not guarantee a new refresh token however.
@@ -296,7 +296,7 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
   // the system.
   if (response.data['refresh_token']) {
     // Replace the old refresh token with the new one we were just issued.
-    userRecordUpdate.refreshToken = response.data['refresh_token'];
+    userRecordUpdate.spotifyRefreshToken = response.data['refresh_token'];
   }
   // Submit database change.
   await admin.firestore().collection('users').doc(firebaseAuthUID)
@@ -318,7 +318,7 @@ export const getFSUTopArtists = functions.https.onCall(async (data, context) => 
       .limit(50)
       .get());
 
-  return docs.map(doc => doc.data()).filter((doc) => doc['count'] > 1);;
+  return docs.map(doc => doc.data()).filter((doc) => doc['count'] > 1);
 });
 
 /**
@@ -326,38 +326,68 @@ export const getFSUTopArtists = functions.https.onCall(async (data, context) => 
  */
 export const syncExistingUser = functions.https.onRequest((request, response) => {
   const { firebaseAuthUID } = request.body;
+  functions.logger.info('Performing daily sync of user data: ' + firebaseAuthUID);
 
-  admin.firestore().collection('users').doc(firebaseAuthUID).get()
+  // https://stackoverflow.com/questions/57149416/firebase-cloud-function-exits-with-code-16-what-is-error-code-16-and-where-can-i
+  // Avoid floating promise by returning it to Firebase executor.
+  // Firebase will report a code 16 error if we do not notify it of ongoing promises.
+  return admin.firestore().collection('users').doc(firebaseAuthUID).get()
       .then(() => renewSpotifyAuthToken(firebaseAuthUID))
       .then(() => collectListeningHistory(firebaseAuthUID))
       .then(() => {
         functions.logger.info('Successfully collected listening history from user: ' + firebaseAuthUID);
-        response.status(200);
-        // For some reason are functions are timing out if I don't do this.
-        process.exit(0);
+        response.status(200).end();
       })
       .catch((error) => {
         functions.logger.error('Failed to sync user ' + firebaseAuthUID);
         console.error(error);
-        response.status(200);
+        // There's no need to propagate this error up the syncAllUsers.
+        // The issue has already been reported in the log file.
+        response.status(200).end();
       });
 });
 
 /**
  * Syncs all users asynchronously.
  */
-export const syncAllUsers = functions
-    .runWith({
-      timeoutSeconds: 540,
+export const syncAllUsers = functions.runWith({
+      // The maximum timeout allowed by Firebase.
+      timeoutSeconds: 540, // 9 minutes
+      // The maximum memory capacity allowed by Firebase.
       memory: '2GB'
     })
+    // Update the FSU Top 50 and Popular Artists data on a daily basis.
     .pubsub.schedule('every day')
     .onRun(async (context) => {
-  const users = await admin.firestore().collection('users').listDocuments();
+  const userIds = (await admin.firestore().collection('users').listDocuments())
+      .map(user => user.id);
 
-  users
-      .map(user => user.id)
-      .forEach(firebaseAuthUID => axios.post(getEnvironment().syncEndpoint, { firebaseAuthUID }))
+  // The number of synchronizers that can be running simultaneously.
+  // If we run too many synchronizers at once we could hit Spotify's rate limit.
+  // Our synchronizers are programmed to retry failed requests, but a high number of retries might
+  // make the execution time exceed the Firebase function timeout.
+  // This number is basically a guess, because the Spotify docs provide no hard limits.
+  const concurrencyLimit = 5;
+  const numberOfUsersToSync = userIds.length;
+  // The number of batches of operations we will need to run in order to sync all of our users.
+  const batches = Math.ceil(numberOfUsersToSync / concurrencyLimit);
+
+  for (let batchNo = 0; batchNo < batches; batchNo++) {
+    const synchronizers = [];
+    for (let i = 0; i < 5; i++) {
+      // Make sure we're not out of users to sync.
+      // The array might be empty if this is the end of the last batch.
+      if (userIds.length > 0) {
+        const firebaseAuthUID = userIds.pop();
+        synchronizers.push(
+            axios.post(getEnvironment().syncEndpoint, { firebaseAuthUID })
+        );
+      }
+    }
+    // Wait for all synchronizers in this batch to finish, then proceed to the next batch.
+    functions.logger.info('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
+    await Promise.all(synchronizers);
+  }
 });
 
 // noinspection JSUnusedGlobalSymbols
@@ -380,8 +410,8 @@ export const spotifyTemporaryCredentialsReceiver = functions.https.onRequest((re
     });
     return;
   }
-  // Attempt to obtain an access toke using the temporary auth code.
-  newSpotifyAuthToken(spotifyAuthCode, firebaseAuthUID)
+  // Attempt to obtain an access token using the temporary auth code.
+  return newSpotifyAuthToken(spotifyAuthCode, firebaseAuthUID)
       // Collect the listening history of the user immediately.
       // That way they will see their music reflected in the rankings right off the bat.
       // This will be especially useful while the user base is small.
