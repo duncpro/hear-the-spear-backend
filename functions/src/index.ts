@@ -168,7 +168,7 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
  * @param uid The Firebase Auth UID that represents the user.
  */
 const renewSpotifyAuthToken = async (uid: string) => {
-  functions.logger.info('Attempting to renew Spotify authorization for user: ' + uid);
+  console.log('Attempting to renew Spotify authorization for user: ' + uid);
 
   const userData = (await admin.firestore().collection('users').doc(uid).get()).data();
   if (!userData) {
@@ -205,8 +205,8 @@ const renewSpotifyAuthToken = async (uid: string) => {
   );
 
   if (response.data['error']) {
-    functions.logger.error('Failed to refresh authorization for user: ' + uid);
-    functions.logger.error(response.data['error']);
+    console.error('Failed to refresh authorization for user: ' + uid);
+    console.error(response.data['error']);
     throw new Error();
   }
 
@@ -226,13 +226,13 @@ const renewSpotifyAuthToken = async (uid: string) => {
     // Replace the old refresh token with the new one we were just issued.
     userRecordUpdate.spotifyRefreshToken = response.data['refresh_token'];
   } else {
-    functions.logger.warn('Spotify did not provide a refresh token for user: ' + uid);
+    console.warn('Spotify did not provide a refresh token for user: ' + uid);
   }
   // Submit database change.
   await admin.firestore().collection('users').doc(uid)
       .set(userRecordUpdate, { merge: true });
 
-  functions.logger.info('Successfully renewed Spotify authorization for user: ' + uid);
+  console.log('Successfully renewed Spotify authorization for user: ' + uid);
 };
 
 /**
@@ -273,8 +273,8 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
   );
 
   if (response.data['error']) {
-    functions.logger.error('Failed to convert authorization code into longer term access token. Firebase User UID: : ' + firebaseAuthUID);
-    functions.logger.error(response.data['error']);
+    console.error('Failed to convert authorization code into longer term access token. Firebase User UID: : ' + firebaseAuthUID);
+    console.error(response.data['error']);
     throw new Error();
   }
 
@@ -325,7 +325,7 @@ export const getFSUTopArtists = functions.https.onCall(async (data, context) => 
  */
 export const syncExistingUser = functions.https.onRequest((request, response) => {
   const { firebaseAuthUID } = request.body;
-  functions.logger.info('Performing daily sync of user data: ' + firebaseAuthUID);
+  console.log('Performing daily sync of user data: ' + firebaseAuthUID);
 
   // https://stackoverflow.com/questions/57149416/firebase-cloud-function-exits-with-code-16-what-is-error-code-16-and-where-can-i
   // Avoid floating promise by returning it to Firebase executor.
@@ -334,11 +334,11 @@ export const syncExistingUser = functions.https.onRequest((request, response) =>
       .then(() => renewSpotifyAuthToken(firebaseAuthUID))
       .then(() => collectListeningHistory(firebaseAuthUID))
       .then(() => {
-        functions.logger.info('Successfully collected listening history from user: ' + firebaseAuthUID);
+        console.log('Successfully collected listening history from user: ' + firebaseAuthUID);
         response.status(200).end();
       })
       .catch((error) => {
-        functions.logger.error('Failed to sync user ' + firebaseAuthUID);
+        console.error('Failed to sync user ' + firebaseAuthUID);
         console.error(error);
         // There's no need to propagate this error up the syncAllUsers.
         // The issue has already been reported in the log file.
@@ -384,7 +384,7 @@ export const syncAllUsers = functions.runWith({
           }
         }
         // Wait for all synchronizers in this batch to finish, then proceed to the next batch.
-        functions.logger.info('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
+        console.log('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
         await Promise.all(synchronizers);
       }
 });
@@ -402,8 +402,8 @@ export const spotifyTemporaryCredentialsReceiver = functions.https.onRequest((re
   // If Spotify reports an error during the authorization process, stop now and
   // show an error message on the client.
   if (errorOccurred) {
-    functions.logger.error('Spotify raised an error immediately. Did the user deny permission?');
-    functions.logger.error(request.query['error']);
+    console.error('Spotify raised an error immediately. Did the user deny permission?');
+    console.error(request.query['error']);
     response.send({
       success: false
     });
@@ -418,7 +418,7 @@ export const spotifyTemporaryCredentialsReceiver = functions.https.onRequest((re
       // Show the user a success message and thank them for linking their account.
       .then(() => response.redirect(getEnvironment().frontendUrl + '?showContributionSuccessMessage=true'))
       .catch((error) => {
-        functions.logger.error(error);
+        console.error(error);
         response.send({ success: false })
       });
 });
@@ -503,8 +503,8 @@ export const collectNowPlayingDataOfUser = functions.https.onRequest((request, r
       })
       .then(() => response.status(200).end())
       .catch(error => {
-        functions.logger.error('An error occurred while updating Now Playing data for user: ' + firebaseAuthUID);
-        functions.logger.error(error);
+        console.error('An error occurred while updating Now Playing data for user: ' + firebaseAuthUID);
+        console.error(error);
         // There's no need to propagate this error up to the triggering function.
         // We already logged about it here.
         response.status(200).end();
@@ -548,9 +548,9 @@ export const triggerNowPlayingDataFetch = functions.runWith({
         return true;
       });
       if (hasEnoughTimeElapsed) {
-        functions.logger.info('Enough time has elapsed. Continuing with data fetch procedure.')
+        console.log('Enough time has elapsed. Continuing with data fetch procedure.')
       } else {
-        functions.logger.info('Not enough time has elapsed since the last data fetch.');
+        console.log('Not enough time has elapsed since the last data fetch.');
         return;
       }
 
