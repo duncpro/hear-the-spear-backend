@@ -7,5 +7,4 @@ typings/
 
 node_modules/
 
-src/spotify.ts
 src/environment.ts

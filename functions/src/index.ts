@@ -195,9 +195,9 @@ const renewSpotifyAuthToken = async (uid: string) => {
   // Pass in the refresh token that we were given in the past.
   reqParams.append('refresh_token', refreshToken);
   // Pass in our client id so spotify can identify our app.
-  reqParams.append('client_id', spotify.credentials.clientId);
+  reqParams.append('client_id', spotify.getCredentials().clientId);
   // Pass in our secret app password.
-  reqParams.append('client_secret', spotify.credentials.clientSecret);
+  reqParams.append('client_secret', spotify.getCredentials().clientSecret);
 
   const response = await axios.post(
       spotify.tokenServiceUrl,
@@ -259,9 +259,9 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
   // Pass in the refresh token that we were given in the past.
   reqParams.append('code', spotifyAuthCode);
   // Pass in our client id so spotify can identify our app.
-  reqParams.append('client_id', spotify.credentials.clientId);
+  reqParams.append('client_id', spotify.getCredentials().clientId);
   // Pass in our secret app password.
-  reqParams.append('client_secret', spotify.credentials.clientSecret);
+  reqParams.append('client_secret', spotify.getCredentials().clientSecret);
   // This must match the redirect_uri that the user client sent Spotify during
   // the initial call to Spotify's authorization service.
   // This function itself does no redirecting however.
