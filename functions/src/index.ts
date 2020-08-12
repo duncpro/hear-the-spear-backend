@@ -212,12 +212,10 @@ const renewSpotifyAuthToken = async (uid: string) => {
 
   // Update the user's record in our database.
   // Store the new tokens.
-  const userRecordUpdate = {
+  const userRecordUpdate: any = {
     spotifyAccessToken: response.data['access_token'],
     // Store the expiration date so we know when we need to renew our token again.
     spotifyAccessTokenExpires: response.data['expires_in'] * 1000 + Date.now(),
-    // The old refresh token has been used up, delete it.
-    spotifyRefreshToken: FieldValue.delete()
   };
   // If we were issued a refresh token, store it as well.
   // Spotify does not guarantee a new refresh token however.
@@ -282,13 +280,10 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
 
   // Update the user's record in our database.
   // Store the new tokens.
-  const userRecordUpdate = {
+  const userRecordUpdate: any = {
     spotifyAccessToken: response.data['access_token'],
     // Store the expiration date so we know when we need to renew our token again.
     spotifyAccessTokenExpires: response.data['expires_in'] * 1000 + Date.now(),
-    // If the user is already authenticated, an old refresh token might be stored in the system.
-    // We can delete it as it will most likely be replaced with a new one in a second.
-    spotifyRefreshToken: FieldValue.delete(),
     // The user's account was created after August 11 2020.
     // We have access to their playback status.
     grantedNowPlayingAccess: true
