@@ -7,6 +7,17 @@ import { getEnvironment } from "./environment";
 
 admin.initializeApp();
 
+const convertSpotifyTrackToHearTheSpearTrack = (spotifyTrack: any) => {
+  return {
+    name: spotifyTrack['name'],
+    artist: spotifyTrack['album']['artists'][0]['name'],
+    album: spotifyTrack['album']['name'],
+    art: spotifyTrack['album']['images'].pop()['url'],
+    preview: spotifyTrack['preview_url'],
+    link: spotifyTrack['external_urls']['spotify']
+  }
+};
+
 const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
   // Get the user record from the database.
   const userDoc = await admin.firestore().collection('users').doc(firebaseAuthUID).get();
@@ -104,19 +115,7 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
     const update = {
       // Increment the count by 1, as we have just discovered another frequent listener.
       count: FieldValue.increment(1),
-      // Store the name of the track, in case this is the first time it has been recorded in our system.
-      name: track['name'],
-      // Store the artist of the track, in case this is the first time it has been recorded in our system.
-      artist: track['album']['artists'][0]['name'],
-      // Store the album of the track, in case this is the first it has been recorded in our system.
-      album: track['album']['name'],
-      // Store the artwork, in case this is the first it has been recorded in our system.
-      // The last image in the list is always the smallest, perfect for our icons.
-      art: track['album']['images'].pop()['url'],
-      // Store the preview url, in case this is the first the track has been recorded in our system.
-      preview: track['preview_url'],
-      // Store a link to the long, in case this is the first the song has been recorded in our system.
-      link: track['external_urls']['spotify']
+      ...convertSpotifyTrackToHearTheSpearTrack(track)
     };
     batch.set(doc, update, { merge: true });
   }
@@ -287,7 +286,10 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
     spotifyAccessTokenExpires: response.data['expires_in'] * 1000 + Date.now(),
     // If the user is already authenticated, an old refresh token might be stored in the system.
     // We can delete it as it will most likely be replaced with a new one in a second.
-    spotifyRefreshToken: FieldValue.delete()
+    spotifyRefreshToken: FieldValue.delete(),
+    // The user's account was created after August 11 2020.
+    // We have access to their playback status.
+    grantedNowPlayingAccess: true
   };
   // If we were issued a refresh token, store it as well.
   // Spotify does not guarantee a new refresh token however.
@@ -359,35 +361,35 @@ export const syncAllUsers = functions.runWith({
     // Update the FSU Top 50 and Popular Artists data on a daily basis.
     .pubsub.schedule('every day')
     .onRun(async (context) => {
-  const userIds = (await admin.firestore().collection('users').listDocuments())
-      .map(user => user.id);
+      const userIds = (await admin.firestore().collection('users').listDocuments())
+          .map(user => user.id);
 
-  // The number of synchronizers that can be running simultaneously.
-  // If we run too many synchronizers at once we could hit Spotify's rate limit.
-  // Our synchronizers are programmed to retry failed requests, but a high number of retries might
-  // make the execution time exceed the Firebase function timeout.
-  // This number is basically a guess, because the Spotify docs provide no hard limits.
-  const concurrencyLimit = 5;
-  const numberOfUsersToSync = userIds.length;
-  // The number of batches of operations we will need to run in order to sync all of our users.
-  const batches = Math.ceil(numberOfUsersToSync / concurrencyLimit);
+      // The number of synchronizers that can be running simultaneously.
+      // If we run too many synchronizers at once we could hit Spotify's rate limit.
+      // Our synchronizers are programmed to retry failed requests, but a high number of retries might
+      // make the execution time exceed the Firebase function timeout.
+      // This number is basically a guess, because the Spotify docs provide no hard limits.
+      const concurrencyLimit = 5;
+      const numberOfUsersToSync = userIds.length;
+      // The number of batches of operations we will need to run in order to sync all of our users.
+      const batches = Math.ceil(numberOfUsersToSync / concurrencyLimit);
 
-  for (let batchNo = 0; batchNo < batches; batchNo++) {
-    const synchronizers = [];
-    for (let i = 0; i < 5; i++) {
-      // Make sure we're not out of users to sync.
-      // The array might be empty if this is the end of the last batch.
-      if (userIds.length > 0) {
-        const firebaseAuthUID = userIds.pop();
-        synchronizers.push(
-            axios.post(getEnvironment().syncEndpoint, { firebaseAuthUID })
-        );
+      for (let batchNo = 0; batchNo < batches; batchNo++) {
+        const synchronizers = [];
+        for (let i = 0; i < 5; i++) {
+          // Make sure we're not out of users to sync.
+          // The array might be empty if this is the end of the last batch.
+          if (userIds.length > 0) {
+            const firebaseAuthUID = userIds.pop();
+            synchronizers.push(
+                axios.post(getEnvironment().syncEndpoint, { firebaseAuthUID })
+            );
+          }
+        }
+        // Wait for all synchronizers in this batch to finish, then proceed to the next batch.
+        functions.logger.info('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
+        await Promise.all(synchronizers);
       }
-    }
-    // Wait for all synchronizers in this batch to finish, then proceed to the next batch.
-    functions.logger.info('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
-    await Promise.all(synchronizers);
-  }
 });
 
 // noinspection JSUnusedGlobalSymbols
@@ -422,4 +424,192 @@ export const spotifyTemporaryCredentialsReceiver = functions.https.onRequest((re
         functions.logger.error(error);
         response.send({ success: false })
       });
+});
+
+
+
+/**
+ * Poll Spotify for now playing data of specific user.
+ * Store now playing data in Cloud Firestore.
+ * Invoked by triggerNowPlayingDataFetch
+ */
+export const collectNowPlayingDataOfUser = functions.https.onRequest((request, response) => {
+  const { firebaseAuthUID } = request.body;
+
+  // Make sure our Spotify token is valid and hasn't expired.
+  return renewSpotifyAuthToken(firebaseAuthUID)
+      // Get the user data from Cloud firestore
+      .then(() => admin.firestore().collection('users').doc(firebaseAuthUID).get())
+      .then(userDoc => {
+        // Older versions of HearTheSpear did not request access to the user's currently playing track.
+        // Make sure that this user has granted us permission to view their now playing songs.
+        // This will always be true for users created after August 11 2020.
+        const isAllowedByUser = userDoc.data()!['grantedNowPlayingAccess'];
+
+        if (!isAllowedByUser) {
+          return null;
+        }
+
+        console.log('Polling playback state of user: ' + firebaseAuthUID);
+        return axios.get(
+            spotify.nowPlayingSongUrl,
+            {
+              headers: {
+                'Authorization': 'Bearer ' + userDoc.data()!['spotifyAccessToken']
+              }
+            })
+      })
+      .then(spotifyResponse => {
+        return admin.firestore().runTransaction(async transaction => {
+          const userDoc = admin.firestore().collection('users').doc(firebaseAuthUID);
+          const userData = (await transaction.get(userDoc)).data()!;
+          // The Spotify ID of the song the user was last listening to.
+          // https://developer.spotify.com/documentation/web-api/#spotify-uris-and-ids
+          const oldSongId: string = userData['lastListenedToSongId'];
+
+          // There might not be an old song ID yet. For example: A request for now playing music
+          // has not been made since this user joined Hear The Spear.
+          if (oldSongId) {
+            // Firestore document that represents a song that was played by an FSU student recently.
+            const nowPlayingSongDoc = admin.firestore().collection('nowPlayingSongs').doc(oldSongId);
+            // This data is old and stale. Remove it from the database. We will add new data in momentarily.
+            transaction.set(nowPlayingSongDoc, {
+              count: FieldValue.increment(-1)
+            }, { merge: true });
+            // Now that we've decremented this now playing counter for this song.
+            // Remove the song from the user's profile.
+            transaction.set(userDoc, {
+              lastListenedToSongId: FieldValue.delete()
+            }, { merge: true });
+          }
+
+          // If this is null, we do not have permission to check the user's currently playing track.
+          // If status is 204, the user is not currently playing a track.
+          // Spotify's documentation warns to check for a null "item" field.
+          // HearTheSpear is a music tracking service, not a podcast tracker.
+          if (spotifyResponse !== null && spotifyResponse.status !== 204 && spotifyResponse.data['item'] !== null
+            && spotifyResponse.data['currently_playing_type'] === 'track') {
+            const nowPlayingSongDoc = admin.firestore().collection('nowPlayingSongs')
+                .doc(spotifyResponse.data['item']['id']);
+
+            // The user is currently listening to this song, increment the count by 1.
+            transaction.set(nowPlayingSongDoc, {
+              count: FieldValue.increment(1),
+              ...convertSpotifyTrackToHearTheSpearTrack(spotifyResponse.data['item'])
+            }, { merge: true });
+
+            transaction.set(userDoc, {
+              lastListenedToSongId: spotifyResponse.data['item']['id']
+            }, { merge: true });
+          }
+        })
+      })
+      .then(() => response.status(200).end())
+      .catch(error => {
+        functions.logger.error('An error occurred while updating Now Playing data for user: ' + firebaseAuthUID);
+        functions.logger.error(error);
+        // There's no need to propagate this error up to the triggering function.
+        // We already logged about it here.
+        response.status(200).end();
+      });
+});
+
+/**
+ * Invoked by the web client when fresh now playing data is requested by the user, this happens automatically
+ * ever fifteen seconds. If a data fetch is already in progress, the function will terminate immediately.
+ */
+export const triggerNowPlayingDataFetch = functions.runWith({
+    // The maximum timeout allowed by Firebase.
+    timeoutSeconds: 540, // 9 minutes
+    // The maximum memory capacity allowed by Firebase.
+    memory: '2GB'
+  })
+  .https.onCall(async (data, context) => {
+      // Protect ourselves from a malicious actor hitting this endpoint a bunch and using up our Spotify rate limit.
+      const kvStoreDocRef = admin.firestore().collection('misc').doc('kvStore');
+      const hasEnoughTimeElapsed = await admin.firestore().runTransaction(async transaction => {
+        const kvStoreDoc = await transaction.get(kvStoreDocRef);
+        // Won't exist the first time we run the app or after a reset.
+        if (kvStoreDoc.exists) {
+          const lastTime = kvStoreDoc.data()!['lastNowPlayingDataFetch'];
+
+          if (lastTime) {
+            const cooldownPeriod = 30 * 1000;
+            const soonestSafeInvocation = lastTime + cooldownPeriod;
+            // If at least 30 seconds has not passed, then do not fetch data from the Spotify API.
+            if (Date.now() < soonestSafeInvocation) {
+              return false;
+            }
+          }
+        }
+        // Record this invocation.
+        transaction.set(kvStoreDocRef, {
+          lastNowPlayingDataFetch: Date.now()
+        }, { merge: true });
+
+        // Enough time has passed, we can proceed.
+        return true;
+      });
+      if (hasEnoughTimeElapsed) {
+        functions.logger.info('Enough time has elapsed. Continuing with data fetch procedure.')
+      } else {
+        functions.logger.info('Not enough time has elapsed since the last data fetch.');
+        return;
+      }
+
+      // If this firebase document exists, a data fetcher is already running. There is no need to start another one.
+      const isAlreadyRunningDocRef = admin.firestore().collection('flags')
+          .doc('fetchingNowPlayingData');
+      // Whether or not another fetcher is already running. This is true when there is another client browsing the page
+      // right now.
+      const isAlreadyRunning = await admin.firestore().runTransaction(async (transaction) => {
+        // The firestore document that represents this global flag.
+        const isAlreadyRunningDoc = await transaction.get(isAlreadyRunningDocRef);
+        if (isAlreadyRunningDoc.exists) {
+          // There is data fetcher already running.
+          return true;
+        }
+        // A fetcher is not running, therefore we will start one now.
+        // Set the "already running" flag in the database, so other clients wont start duplicates.
+        // That would be unnecessary and we'd hit Spotify's rate limit really fast.
+        await transaction.create(isAlreadyRunningDocRef, {
+          info: 'The existence of this document means a Now Playing Data Fetcher is currently running.'
+        });
+        return false;
+      });
+
+      if (isAlreadyRunning) {
+        // There is a data fetcher already running. No need to start another one.
+        return;
+      }
+
+      // A collection of all the users who have given us permission to access their currently playing track.
+      const userIds = (await admin.firestore().collection('users')
+          .listDocuments())
+          .map(ref => ref.id);
+
+      // The number of data collectors to run at the same time. Limiting this number ensures we don't overwhelm
+      // the Spotify API and incur the wrath of their rate limiting.
+      const concurrencyLimit = 5;
+      const numberOfUsersToQuery = userIds.length;
+      // The number of batches we will need to run to hit all our users.
+      const batches = Math.ceil(numberOfUsersToQuery / concurrencyLimit);
+
+      for (let batchNo = 0; batchNo < batches; batchNo++) {
+        const dataFetchers = [];
+        for (let i = 0; i < 5; i++) {
+          if (userIds.length < 1) {
+            break;
+          }
+
+          const firebaseAuthUID = userIds.pop();
+          dataFetchers.push(
+              axios.post(getEnvironment().collectNowPlayingDataUrl, { firebaseAuthUID })
+          );
+        }
+        await Promise.all(dataFetchers);
+      }
+      // We're done with all users.
+      // Remove the flag and wait for another keep alive request.
+      await isAlreadyRunningDocRef.delete();
 });
