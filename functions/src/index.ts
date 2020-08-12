@@ -227,6 +227,8 @@ const renewSpotifyAuthToken = async (uid: string) => {
   if (response.data['refresh_token']) {
     // Replace the old refresh token with the new one we were just issued.
     userRecordUpdate.spotifyRefreshToken = response.data['refresh_token'];
+  } else {
+    functions.logger.warn('Spotify did not provide a refresh token for user: ' + uid);
   }
   // Submit database change.
   await admin.firestore().collection('users').doc(uid)
