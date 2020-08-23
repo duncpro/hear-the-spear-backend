@@ -246,7 +246,11 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
   // If they made it this far in the auth process without an FSU email, then they are acting maliciously.
   // Do not proceed.
   const firebaseAuthUser = await admin.auth().getUser(firebaseAuthUID);
-  if (!(firebaseAuthUser.email!.endsWith('@my.fsu.edu') || firebaseAuthUser.email!.endsWith('@fsu.edu'))) {
+  if (!(
+      firebaseAuthUser.email!.endsWith('@my.fsu.edu') ||
+      firebaseAuthUser.email!.endsWith('@fsu.edu') ||
+      firebaseAuthUser.email!.endsWith('@magnet.fsu.edu')
+  )) {
     return;
   }
 
