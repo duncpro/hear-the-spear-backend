@@ -574,13 +574,15 @@ export const triggerNowPlayingDataFetch = functions.runWith({
         // Set the "already running" flag in the database, so other clients wont start duplicates.
         // That would be unnecessary and we'd hit Spotify's rate limit really fast.
         await transaction.create(isAlreadyRunningDocRef, {
-          info: 'The existence of this document means a Now Playing Data Fetcher is currently running.'
+          info: 'The existence of this document means a Now Playing Data Fetcher is currently running.',
+          created: new Date().toISOString()
         });
         return false;
       });
 
       if (isAlreadyRunning) {
         // There is a data fetcher already running. No need to start another one.
+        console.info('There is a data fetcher already running. Halting now.');
         return;
       }
 
