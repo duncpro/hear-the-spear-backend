@@ -499,9 +499,13 @@ export const collectNowPlayingDataOfUser = functions.https.onRequest((request, r
               ...convertSpotifyTrackToHearTheSpearTrack(spotifyResponse.data['item'])
             }, { merge: true });
 
+            console.log(`User ${firebaseAuthUID} is currently listening to ${spotifyResponse.data['item']['name']}`)
+
             transaction.set(userDoc, {
               lastListenedToSongId: spotifyResponse.data['item']['id']
             }, { merge: true });
+          } else {
+            console.log(`User ${firebaseAuthUID} is not listening to anything right now.`);
           }
         })
       })
