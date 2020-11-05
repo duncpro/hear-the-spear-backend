@@ -4,7 +4,7 @@ This is the backend system for [HearTheSpear.com](https://HearTheSpear.com), the
 ## Features
 - Enrollment/Employment at FSU is verified by @fsu.edu email.
 - Securely integrated with Spotify using OAuth flow.
-- Tracks the most popular tracks at FSU over the past few weeks.
+- Tracks the most popular songs at FSU over the past few weeks.
 - Tracks the most popular artists at FSU other the past few weeks.
 - Realtime list of tracks playing at FSU.
 - Trending songs and tracks are re-aggregated daily.
