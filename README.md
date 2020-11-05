@@ -16,7 +16,7 @@ This is the backend system for [HearTheSpear.com](https://HearTheSpear.com), the
 In other words, songs that are shared between many users / appear in many users top 50 are ranked higher.
 - Listening history gathered concurrently per-user on a daily basis from Spotify's HTTP API. (Secured with OAuth)
 - Realtime "Now Playing" activity lazily refreshed using client heartbeat mechanism. System doesn't spam Spotify when no one is 
-onsite, we save money.
+onsite, compute time stays in free tier.
 - Listening habits stored in Cloud Firestore Realtime Database.
 - Album Art and Songs Previews provided by Spotify's Content API.
 - Verification emails sent to FSU inboxes using Firebase Authentication.
