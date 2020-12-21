@@ -6,6 +6,7 @@
     "outDir": "lib",
     "sourceMap": true,
     "strict": true,
+    "lib": ["es2020.Promise"],
     "target": "es2017"
   },
   "compileOnSave": true,

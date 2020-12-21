@@ -1,9 +1,11 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import * as spotify from './spotify';
-import axios from 'axios';
+import axios, {AxiosResponse} from 'axios';
 import FieldValue = admin.firestore.FieldValue;
 import { getEnvironment } from "./environment";
+import { URLSearchParams } from 'url';
+var allSettled = require('promise.allsettled');
 
 admin.initializeApp();
 
@@ -92,12 +94,13 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
     }
   };
 
+  await purgeListeningHistoryOfUser(firebaseAuthUID)
+
   // Request the user's listening history from the Spotify Web API.
+
   const [userFavoriteTracksResponse, userFavoriteArtistsResponse] = await Promise.all([
       axios.get(getSpotifyEndpoint('tracks'), httpClientConfig),
       axios.get(getSpotifyEndpoint('artists'), httpClientConfig),
-      // Simultaneously purge the user's old listening habits from our records.
-      purgeListeningHistoryOfUser(firebaseAuthUID)
   ]);
 
   const userFavoriteTracks = userFavoriteTracksResponse.data['items'];
@@ -206,16 +209,27 @@ const renewSpotifyAuthToken = async (uid: string) => {
   // Pass in our secret app password.
   reqParams.append('client_secret', spotify.getCredentials().clientSecret);
 
-  const response = await axios.post(
-      spotify.tokenServiceUrl,
-      reqParams
-  );
 
-  if (response.data['error']) {
-    console.error('Failed to refresh authorization for user: ' + uid);
-    console.error(response.data['error']);
+  let response: AxiosResponse;
+
+  try {
+    response = await axios.post(
+        spotify.tokenServiceUrl,
+        reqParams
+    );
+  } catch (error) {
+    // This means the user has revoked the refresh token.
+    if (error.response.data['error'] === 'invalid_grant') {
+      console.error('Failed to refresh authorization for user: ' + uid);
+      console.error(error);
+      await purgeListeningHistoryOfUser(uid);
+      await admin.firestore().collection('users').doc('uid').delete();
+    }
+
     throw new Error();
   }
+
+
 
   // Update the user's record in our database.
   // Store the new tokens.
@@ -224,11 +238,6 @@ const renewSpotifyAuthToken = async (uid: string) => {
     // Store the expiration date so we know when we need to renew our token again.
     spotifyAccessTokenExpires: response.data['expires_in'] * 1000 + Date.now(),
   };
-  // If we were issued a refresh token, store it as well.
-  // Spotify does not guarantee a new refresh token however.
-  // In this case, we will no longer have access to the user's data after
-  // our current access token expires. At that point the user will be purged from
-  // the system.
   let essentialUserDataBackupCompleted: Promise<any> = Promise.resolve();
   if (response.data['refresh_token']) {
     // Replace the old refresh token with the new one we were just issued.
@@ -380,61 +389,70 @@ export const syncExistingUser = functions.https.onRequest((request, response) =>
       });
 });
 
-async function updateFSUTop50Playlist() {
-  const duncan = await admin.auth().getUserByEmail('dbp19a@my.fsu.edu');
+export const updateFSUTop50Playlist = functions
+    // Update the FSU Top 50 and Popular Artists data on a daily basis.
+    .pubsub.schedule('59 23 * * *')
+    .onRun(async (context) => {
+      const duncan = await admin.auth().getUserByEmail('dbp19a@my.fsu.edu');
 
-  const playlistApiUrl = `https://api.spotify.com/v1/playlists/${getEnvironment().spotifyPlaylist}`;
+      const playlistApiUrl = `https://api.spotify.com/v1/playlists/${getEnvironment().spotifyPlaylist}`;
 
-  await renewSpotifyAuthToken(duncan.uid);
+      await renewSpotifyAuthToken(duncan.uid);
 
-  const userDoc = await admin.firestore().collection('users').doc(duncan.uid).get();
+      const userDoc = await admin.firestore().collection('users').doc(duncan.uid).get();
 
-  // Pass Spotify authorization keys to Axios http client.
-  const httpClientConfig = {
-    headers: {
-      // Get the Spotify access code for the user.
-      'Authorization': 'Bearer ' + userDoc.data()!['spotifyAccessToken']
-    }
-  };
+      // Pass Spotify authorization keys to Axios http client.
+      const httpClientConfig = {
+        headers: {
+          // Get the Spotify access code for the user.
+          'Authorization': 'Bearer ' + userDoc.data()!['spotifyAccessToken']
+        }
+      };
 
-  try {
-    // Get all the tracks currently stored in the playlist.
-    const currentPlaylistState = (await axios.get(playlistApiUrl + '?fields=tracks(items(track(uri)))&market=ES', httpClientConfig)).data;
+      try {
+        // Get all the tracks currently stored in the playlist.
+        let currentPlaylistState = (await axios.get(playlistApiUrl + '?fields=snapshot_id,tracks(total)&market=ES', httpClientConfig)).data;
 
-    console.log('Done reading playlist state.');
+        let positions = [];
+        for (let i = 0; i < currentPlaylistState.tracks.total; i++) {
+          positions.push(i);
+        }
 
-    // Delete all the tracks.
-    await axios.delete(playlistApiUrl + '/tracks', {
-      ...httpClientConfig,
-      data: {
-        tracks: currentPlaylistState.tracks.items.map((item: any) => ({ uri: item.track.uri }))
+        if (positions.length > 0) {
+          // Delete all the tracks.
+          await axios.delete(playlistApiUrl + '/tracks', {
+            ...httpClientConfig,
+            data: {
+              snapshot_id: currentPlaylistState.snapshot_id,
+              positions
+            }
+          });
+        }
+
+
+        console.log('Done clearing playlist.');
+
+        // Add the new tracks.
+        const { docs } = (await TOP_TRACKS_QUERY.get());
+        const uris = docs
+            .map(doc => doc.data())
+            .filter((data) => data['count'] > 1)
+            .map((data) => data.spotifyUri);
+
+        await axios({
+          method: 'POST',
+          url: playlistApiUrl + '/tracks',
+          ...httpClientConfig,
+          data: { uris }
+        });
+
+      } catch (error) {
+        console.error(error);
       }
+
+
+      console.log('Successfully updated Spotify Top 50 Playlist!');
     });
-
-    console.log('Done clearing playlist.');
-
-    // Add the new tracks.
-    const { docs } = (await TOP_TRACKS_QUERY.get());
-    const uris = docs
-        .map(doc => doc.data())
-        .filter((data) => data['count'] > 1)
-        .map((data) => data.spotifyUri);
-
-    await axios({
-      method: 'POST',
-      url: playlistApiUrl + '/tracks',
-      ...httpClientConfig,
-      data: { uris }
-    });
-
-  } catch (error) {
-    console.error(error);
-  }
-
-
-  console.log('Successfully updated Spotify Top 50 Playlist!');
-}
-
 /**
  * Syncs all users concurrently.
  */
@@ -445,7 +463,7 @@ export const syncAllUsers = functions.runWith({
       memory: '2GB'
     })
     // Update the FSU Top 50 and Popular Artists data on a daily basis.
-    .pubsub.schedule('59 23 * * *')
+    .pubsub.schedule('59 22 * * *')
     .onRun(async (context) => {
       const userIds = (await admin.firestore().collection('users').listDocuments())
           .map(user => user.id);
@@ -474,10 +492,9 @@ export const syncAllUsers = functions.runWith({
         }
         // Wait for all synchronizers in this batch to finish, then proceed to the next batch.
         console.log('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
-        await Promise.all(synchronizers);
-      }
 
-      await updateFSUTop50Playlist();
+        await allSettled(synchronizers);
+      }
 });
 
 // noinspection JSUnusedGlobalSymbols
