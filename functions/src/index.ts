@@ -163,7 +163,7 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
 
 /**
  * Spotify 3rd party application auth tokens periodically expire.
- * Use the refresh auth token to request a fresh new auth token.
+ * Use refreshSpotifyAuthToken to request a fresh new auth token.
  * Store the new token in the database.
  * @param uid The Firebase Auth UID that represents the user.
  */
@@ -181,6 +181,12 @@ const renewSpotifyAuthToken = async (uid: string) => {
   const reqParams = new URLSearchParams();
 
   if (!refreshToken) {
+    // If no refresh token is found in the database then the user is considered "Dead".
+    // Without a refresh token we can't request a new auth token from Spotify.
+
+    await purgeListeningHistoryOfUser(uid);
+    await admin.firestore().collection('users').doc(uid).delete();
+
     throw new Error('No refresh token found in database. This function is for renewing existing authorization. ' +
         ' Did you mean to invoke newSpotifyAuthToken instead?')
   }
@@ -222,15 +228,23 @@ const renewSpotifyAuthToken = async (uid: string) => {
   // In this case, we will no longer have access to the user's data after
   // our current access token expires. At that point the user will be purged from
   // the system.
+  let essentialUserDataBackupCompleted: Promise<any> = Promise.resolve();
   if (response.data['refresh_token']) {
     // Replace the old refresh token with the new one we were just issued.
     userRecordUpdate.spotifyRefreshToken = response.data['refresh_token'];
+    essentialUserDataBackupCompleted = admin.firestore().collection('essentialUserData')
+        .doc(uid)
+        .set({
+          spotifyRefreshToken: userRecordUpdate.spotifyRefreshToken
+        });
   } else {
     console.warn('Spotify did not provide a refresh token for user: ' + uid);
   }
   // Submit database change.
-  await admin.firestore().collection('users').doc(uid)
+  const userRecordUpdateCompleted = admin.firestore().collection('users').doc(uid)
       .set(userRecordUpdate, { merge: true });
+
+  await Promise.all([userRecordUpdateCompleted, essentialUserDataBackupCompleted]);
 
   console.log('Successfully renewed Spotify authorization for user: ' + uid);
 };
@@ -297,13 +311,27 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
   // In this case, we will no longer have access to the user's data after
   // our current access token expires. At that point the user will be purged from
   // the system.
+  let essentialUserDataBackupComplete: Promise<any> = Promise.resolve();
   if (response.data['refresh_token']) {
     // Replace the old refresh token with the new one we were just issued.
     userRecordUpdate.spotifyRefreshToken = response.data['refresh_token'];
+
+    // A user's Spotify refresh token is the single most important piece of information in the entire database.
+    // Every other entry in the database can be rebuilt given the user's refresh token.
+    // It is imperative that we don't ever loose a user's refresh token. \
+    // Store the refresh token in the user's record AND in a separate less volatile document that serves as an
+    // emergency backup.
+    essentialUserDataBackupComplete = admin.firestore().collection('essentialUserData')
+        .doc(firebaseAuthUID)
+        .set({
+          spotifyRefreshToken: userRecordUpdate.spotifyRefreshToken,
+        });
   }
   // Submit database change.
-  await admin.firestore().collection('users').doc(firebaseAuthUID)
+  const userRecordUpdateCompleted = admin.firestore().collection('users').doc(firebaseAuthUID)
       .set(userRecordUpdate, { merge: true });
+
+  await Promise.all([userRecordUpdateCompleted, essentialUserDataBackupComplete]);
 };
 
 export const getFSUTopTracks = functions.https.onCall(async (data, context) => {
@@ -529,7 +557,7 @@ export const triggerNowPlayingDataFetch = functions.runWith({
     // The maximum memory capacity allowed by Firebase.
     memory: '2GB'
   })
-  .https.onCall(async (data, context) => {
+  .https.onCall(async () => {
       // Protect ourselves from a malicious actor hitting this endpoint a bunch and using up our Spotify rate limit.
       const kvStoreDocRef = admin.firestore().collection('misc').doc('kvStore');
       const hasEnoughTimeElapsed = await admin.firestore().runTransaction(async transaction => {
