@@ -14,7 +14,8 @@ const convertSpotifyTrackToHearTheSpearTrack = (spotifyTrack: any) => {
     album: spotifyTrack['album']['name'],
     art: spotifyTrack['album']['images'].pop()['url'],
     preview: spotifyTrack['preview_url'],
-    link: spotifyTrack['external_urls']['spotify']
+    link: spotifyTrack['external_urls']['spotify'],
+    spotifyUri: spotifyTrack['uri']
   }
 };
 
@@ -334,11 +335,12 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
   await Promise.all([userRecordUpdateCompleted, essentialUserDataBackupComplete]);
 };
 
+const TOP_TRACKS_QUERY = admin.firestore().collection('tracks')
+    .orderBy('count', 'desc')
+    .limit(50);
+
 export const getFSUTopTracks = functions.https.onCall(async (data, context) => {
-  const { docs } = (await admin.firestore().collection('tracks')
-      .orderBy('count', 'desc')
-      .limit(50)
-      .get());
+  const { docs } = (await TOP_TRACKS_QUERY.get());
 
   return docs.map(doc => doc.data()).filter((doc) => doc['count'] > 1);
 });
@@ -377,6 +379,61 @@ export const syncExistingUser = functions.https.onRequest((request, response) =>
         response.status(200).end();
       });
 });
+
+async function updateFSUTop50Playlist() {
+  const duncan = await admin.auth().getUserByEmail('dbp19a@my.fsu.edu');
+
+  const playlistApiUrl = `https://api.spotify.com/v1/playlists/${getEnvironment().spotifyPlaylist}`;
+
+  await renewSpotifyAuthToken(duncan.uid);
+
+  const userDoc = await admin.firestore().collection('users').doc(duncan.uid).get();
+
+  // Pass Spotify authorization keys to Axios http client.
+  const httpClientConfig = {
+    headers: {
+      // Get the Spotify access code for the user.
+      'Authorization': 'Bearer ' + userDoc.data()!['spotifyAccessToken']
+    }
+  };
+
+  try {
+    // Get all the tracks currently stored in the playlist.
+    const currentPlaylistState = (await axios.get(playlistApiUrl + '?fields=tracks(items(track(uri)))&market=ES', httpClientConfig)).data;
+
+    console.log('Done reading playlist state.');
+
+    // Delete all the tracks.
+    await axios.delete(playlistApiUrl + '/tracks', {
+      ...httpClientConfig,
+      data: {
+        tracks: currentPlaylistState.tracks.items.map((item: any) => ({ uri: item.track.uri }))
+      }
+    });
+
+    console.log('Done clearing playlist.');
+
+    // Add the new tracks.
+    const { docs } = (await TOP_TRACKS_QUERY.get());
+    const uris = docs
+        .map(doc => doc.data())
+        .filter((data) => data['count'] > 1)
+        .map((data) => data.spotifyUri);
+
+    await axios({
+      method: 'POST',
+      url: playlistApiUrl + '/tracks',
+      ...httpClientConfig,
+      data: { uris }
+    });
+
+  } catch (error) {
+    console.error(error);
+  }
+
+
+  console.log('Successfully updated Spotify Top 50 Playlist!');
+}
 
 /**
  * Syncs all users concurrently.
@@ -419,6 +476,8 @@ export const syncAllUsers = functions.runWith({
         console.log('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
         await Promise.all(synchronizers);
       }
+
+      await updateFSUTop50Playlist();
 });
 
 // noinspection JSUnusedGlobalSymbols
