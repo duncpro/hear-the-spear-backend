@@ -379,7 +379,7 @@ export const syncExistingUser = functions.https.onRequest((request, response) =>
 });
 
 /**
- * Syncs all users asynchronously.
+ * Syncs all users concurrently.
  */
 export const syncAllUsers = functions.runWith({
       // The maximum timeout allowed by Firebase.
