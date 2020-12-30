@@ -15,6 +15,7 @@ const convertSpotifyTrackToHearTheSpearTrack = (spotifyTrack: any) => {
     artist: spotifyTrack['album']['artists'][0]['name'],
     album: spotifyTrack['album']['name'],
     art: spotifyTrack['album']['images'].pop()['url'],
+    artMedium: spotifyTrack['album']['images'].pop()['url'],
     preview: spotifyTrack['preview_url'],
     link: spotifyTrack['external_urls']['spotify'],
     spotifyUri: spotifyTrack['uri']
@@ -31,6 +32,11 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
     for (const trackId of userDoc.data()!['tracks']) {
       // Get a reference to the counter document for this track.
       const trackDoc = admin.firestore().collection('tracks').doc(trackId);
+
+      if (!(await trackDoc.get()).exists) {
+        console.warn('Expected track document to exist but it was not in the database: ' + trackId);
+        continue;
+      }
       // Decrement the count by one, since this user's history is being purged.
       batch.update(trackDoc, {
         count: FieldValue.increment(-1)
@@ -43,6 +49,10 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
       // Get a reference to the counter document for this artist.
       const artistDoc = admin.firestore().collection('artists').doc(artistId);
       // Decrement the count by one, since this user's history is being purged.
+      if (!(await artistDoc.get()).exists) {
+        console.warn('Expected artist document to exist but it was not in the database: ' + artistId);
+        continue;
+      }
       batch.update(artistDoc, {
         count: FieldValue.increment(-1)
       });
@@ -351,7 +361,7 @@ const TOP_TRACKS_QUERY = admin.firestore().collection('tracks')
 export const getFSUTopTracks = functions.https.onCall(async (data, context) => {
   const { docs } = (await TOP_TRACKS_QUERY.get());
 
-  return docs.map(doc => doc.data()).filter((doc) => doc['count'] > 1);
+  return docs.map(doc => doc.data());
 });
 
 export const getFSUTopArtists = functions.https.onCall(async (data, context) => {
