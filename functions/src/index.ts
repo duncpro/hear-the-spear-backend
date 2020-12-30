@@ -85,7 +85,7 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
    * @param limit the number of records to return, the maximum value is fifty.
    */
   const getSpotifyEndpoint = (dataType: string, limit: number = 50) =>
-      `https://api.spotify.com/v1/me/top/${dataType}?limit=${limit}&time_range=short_term`;
+      `https://api.spotify.com/v1/me/top/${dataType}?limit=${limit}&time_range=medium_term`;
 
   // Get the user record from the database.
   const userDoc = await admin.firestore().collection('users').doc(firebaseAuthUID).get();
