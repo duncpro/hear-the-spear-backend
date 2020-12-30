@@ -5,7 +5,7 @@ import axios, {AxiosResponse} from 'axios';
 import FieldValue = admin.firestore.FieldValue;
 import { getEnvironment } from "./environment";
 import { URLSearchParams } from 'url';
-var allSettled = require('promise.allsettled');
+const allSettled = require('promise.allsettled');
 
 admin.initializeApp();
 
@@ -728,7 +728,7 @@ export const triggerNowPlayingDataFetch = functions.runWith({
               axios.post(getEnvironment().collectNowPlayingDataUrl, { firebaseAuthUID })
           );
         }
-        await Promise.all(dataFetchers);
+        await allSettled(dataFetchers);
       }
       // We're done with all users.
       // Remove the flag and wait for another keep alive request.
