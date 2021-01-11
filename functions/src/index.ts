@@ -73,7 +73,7 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
 /**
  * Collect the listening history of a Spotify user and stores it in the database.
  * This function assumes that there is a Spotify access token stored for the user and that
- * the token is fresh. If you are unsure whether or not a token is refresh, check the expiration date,
+ * the token is fresh. If you are unsure whether or not a token is fresh, check the expiration date,
  * and if necessary, invoke {@link renewSpotifyAuthToken}.
  * Purges old listening history automatically.
  * @param firebaseAuthUID self explanatory
@@ -85,7 +85,7 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
    * @param limit the number of records to return, the maximum value is fifty.
    */
   const getSpotifyEndpoint = (dataType: string, limit: number = 50) =>
-      `https://api.spotify.com/v1/me/top/${dataType}?limit=${limit}&time_range=medium_term`;
+      `https://api.spotify.com/v1/me/top/${dataType}?limit=${limit}&time_range=short_term`;
 
   // Get the user record from the database.
   const userDoc = await admin.firestore().collection('users').doc(firebaseAuthUID).get();
