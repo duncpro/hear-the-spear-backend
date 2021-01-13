@@ -131,14 +131,25 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
         ...convertSpotifyTrackToHearTheSpearTrack(track)
       };
 
+      // collectListeningHistory() is invoked by syncAllUsers() many times in quick succession. By
+      // truncating the date to the nearest hour we prevent the order in which users are processed
+      // from effecting the order in which songs appear on the list.
+      const truncatedNow = new Date(Date.now());
+      truncatedNow.setMilliseconds(0);
+      truncatedNow.setSeconds(0);
+      truncatedNow.setMinutes(0);
+
       // firstAppeared is the time that the track got one listener.
       // Tracks whose listener count goes from 0 -> 1 have their firstAppearedValue reset.
+      // When polling the database the returned tracks are ordered first by listener count and
+      // then by appearance. This means that the newer tracks are given priority over
+      // older tracks, keeping the list fresher.
       if (trackDoc.exists) {
         if (trackDoc.data()!.count) { // Check if count === 0 but this is safer
-          update.firstAppeared = Date.now();
+          update.firstAppeared = truncatedNow.valueOf();
         }
       } else {
-        update.firstAppeared = Date.now();
+        update.firstAppeared = truncatedNow.valueOf();
       }
 
       transaction.update(trackDocRef, update, { merge: true });
@@ -353,7 +364,7 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
 
     // A user's Spotify refresh token is the single most important piece of information in the entire database.
     // Every other entry in the database can be rebuilt given the user's refresh token.
-    // It is imperative that we don't ever loose a user's refresh token. \
+    // It is imperative that we don't ever loose a user's refresh token.
     // Store the refresh token in the user's record AND in a separate less volatile document that serves as an
     // emergency backup.
     essentialUserDataBackupComplete = admin.firestore().collection('essentialUserData')
@@ -387,6 +398,38 @@ export const getFSUTopArtists = functions.https.onCall(async (data, context) => 
       .get());
 
   return docs.map(doc => doc.data()).filter((doc) => doc['count'] > 1);
+});
+
+export const userDidSignup = functions.auth.user().onCreate(async () => {
+  const data = {
+    signUpCounter: FieldValue.increment(1)
+  }
+  await admin.firestore().collection('misc').doc('kvStore').set(data, { merge: true });
+});
+
+export const userWasDeleted = functions.auth.user().onDelete(async () => {
+  const data = {
+    signUpCounter: FieldValue.increment(-1)
+  }
+  await admin.firestore().collection('misc').doc('kvStore').set(data, { merge: true });
+});
+
+export const getSignUpCount = functions.https.onCall(async (data, context) => {
+  const kvStoreDocRef = admin.firestore().collection('misc').doc('kvStore');
+  const kvStoreDoc = await kvStoreDocRef.get();
+
+  const response = {
+    count: 0
+  };
+
+  if (kvStoreDoc.exists) {
+    const docContents = kvStoreDoc.data()!;
+    if (docContents['signUpCounter']) {
+      response.count = docContents['signUpCounter']
+    }
+  }
+
+  return response;
 });
 
 /**
