@@ -128,7 +128,11 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
       const update: any = {
         // Increment the count by 1, as we have just discovered another frequent listener.
         count: FieldValue.increment(1),
-        ...convertSpotifyTrackToHearTheSpearTrack(track)
+        ...convertSpotifyTrackToHearTheSpearTrack(track),
+
+        // Include a 7 digit random number in the track document. This number will allow
+        // us to pull documents from the database in a completely random order (if desired).
+        random: Math.round(Math.random() * Math.pow(10, 7))
       };
 
       // collectListeningHistory() is invoked by syncAllUsers() many times in quick succession. By

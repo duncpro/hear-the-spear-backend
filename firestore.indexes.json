@@ -13,6 +13,24 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "tracks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "count",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "firstAppeared",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "random",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
