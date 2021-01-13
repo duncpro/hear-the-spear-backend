@@ -489,7 +489,7 @@ export const syncAllUsers = functions.runWith({
       memory: '2GB'
     })
     // Update the FSU Top 50 and Popular Artists data on a daily basis.
-    .pubsub.schedule('59 22 * * *')
+    .pubsub.schedule('every 12 hours')
     .onRun(async (context) => {
       const userIds = (await admin.firestore().collection('users').listDocuments())
           .map(user => user.id);
