@@ -371,6 +371,7 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
 
 const TOP_TRACKS_QUERY = admin.firestore().collection('tracks')
     .orderBy('count', 'desc')
+    .orderBy('firstAppeared', 'desc')
     .limit(50);
 
 export const getFSUTopTracks = functions.https.onCall(async (data, context) => {
