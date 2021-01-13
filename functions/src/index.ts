@@ -116,23 +116,38 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
   const userFavoriteTracks = userFavoriteTracksResponse.data['items'];
   const userFavoriteArtists = userFavoriteArtistsResponse.data['items'];
 
-  // Create a new database transaction.
-  // This will contain all the changes we are about to make.
-  const batch = admin.firestore().batch();
-
   for (const track of userFavoriteTracks) {
     // Example Spotify Track URI: spotify:track:12345
     const trackId = track['uri'].split(':')[2];
     // A reference to the track counter document.
     // This contains a count of all the current users who frequently listen to this song.
-    const doc = admin.firestore().collection('tracks').doc(trackId);
-    const update = {
-      // Increment the count by 1, as we have just discovered another frequent listener.
-      count: FieldValue.increment(1),
-      ...convertSpotifyTrackToHearTheSpearTrack(track)
-    };
-    batch.set(doc, update, { merge: true });
+    const trackDocRef = admin.firestore().collection('tracks').doc(trackId);
+
+    await admin.firestore().runTransaction(async (transaction) => {
+      const trackDoc = await transaction.get(trackDocRef);
+      const update: any = {
+        // Increment the count by 1, as we have just discovered another frequent listener.
+        count: FieldValue.increment(1),
+        ...convertSpotifyTrackToHearTheSpearTrack(track)
+      };
+
+      // firstAppeared is the time that the track got one listener.
+      // Tracks whose listener count goes from 0 -> 1 have their firstAppearedValue reset.
+      if (trackDoc.exists) {
+        if (trackDoc.data()!.count) { // Check if count === 0 but this is safer
+          update.firstAppeared = Date.now();
+        }
+      } else {
+        update.firstAppeared = Date.now();
+      }
+
+      transaction.update(trackDocRef, update, { merge: true });
+    });
   }
+
+  // Create a new database transaction.
+  // This will contain all the changes we are about to make.
+  const batch = admin.firestore().batch();
 
   for (const artist of userFavoriteArtists) {
     // Example Spotify Artist URI: spotify:artist:12345
