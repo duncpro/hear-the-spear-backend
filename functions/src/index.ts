@@ -426,7 +426,7 @@ const getTopTracksQuery = (spotifyTimeRange: string) => {
       .orderBy('count', 'desc')
       .orderBy('firstAppeared', 'desc')
       .orderBy('random', 'desc')
-      .limit(50);
+      .limit(100);
 }
 
 export const getFSUTopTracks = functions.https.onCall(async (data, context) => {
