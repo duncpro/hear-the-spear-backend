@@ -851,7 +851,7 @@ export const triggerNowPlayingDataFetch = functions.runWith({
 
       for (let batchNo = 0; batchNo < batches; batchNo++) {
         const dataFetchers = [];
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < concurrencyLimit; i++) {
           if (userIds.length < 1) {
             break;
           }
@@ -859,15 +859,13 @@ export const triggerNowPlayingDataFetch = functions.runWith({
           const firebaseAuthUID = userIds.pop();
           dataFetchers.push(
               axios.post(getEnvironment().collectNowPlayingDataUrl, { firebaseAuthUID })
+                  .catch((error) => {
+                    console.error('An error occurred while collecting the now playing data of user: ' + firebaseAuthUID);
+                    console.error(error);
+                  })
           );
         }
-        try {
-          await Promise.all(dataFetchers);
-        } catch (error) {
-          // If an error occurs we still need to delete the flag document.
-          // Catch the error so the flag document can be deleted.
-          console.error(error);
-        }
+        await Promise.all(dataFetchers);
       }
       // We're done with all users.
       // Remove the flag and wait for another keep alive request.
