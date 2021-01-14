@@ -5,7 +5,7 @@ import axios, {AxiosResponse} from 'axios';
 import FieldValue = admin.firestore.FieldValue;
 import { getEnvironment } from "./environment";
 import { URLSearchParams } from 'url';
-const allSettled = require('promise.allsettled');
+const { PubSub } = require('@google-cloud/pubsub');
 
 admin.initializeApp();
 
@@ -437,12 +437,9 @@ export const getSignUpCount = functions.https.onCall(async (data, context) => {
   return response;
 });
 
-/**
- * Collects listening history from a given user, refreshing their Spotify authorization if necessary.
- */
-export const syncExistingUser = functions.https.onRequest((request, response) => {
-  const { firebaseAuthUID } = request.body;
-  console.log('Performing daily sync of user data: ' + firebaseAuthUID);
+export const syncUser = functions.pubsub.topic('syncUser').onPublish((message, context) => {
+  const { firebaseAuthUID } = message.json;
+  console.log('Syncing user' + firebaseAuthUID);
 
   // https://stackoverflow.com/questions/57149416/firebase-cloud-function-exits-with-code-16-what-is-error-code-16-and-where-can-i
   // Avoid floating promise by returning it to Firebase executor.
@@ -452,14 +449,12 @@ export const syncExistingUser = functions.https.onRequest((request, response) =>
       .then(() => collectListeningHistory(firebaseAuthUID))
       .then(() => {
         console.log('Successfully collected listening history from user: ' + firebaseAuthUID);
-        response.status(200).end();
       })
       .catch((error) => {
         console.error('Failed to sync user ' + firebaseAuthUID);
         console.error(error);
         // There's no need to propagate this error up the syncAllUsers.
         // The issue has already been reported in the log file.
-        response.status(200).end();
       });
 });
 
@@ -552,6 +547,10 @@ export const syncAllUsers = functions.runWith({
       // The number of batches of operations we will need to run in order to sync all of our users.
       const batches = Math.ceil(numberOfUsersToSync / concurrencyLimit);
 
+      const pubsub = new PubSub({
+        projectId: process.env.GCLOUD_PROJECT,
+      });
+
       for (let batchNo = 0; batchNo < batches; batchNo++) {
         const synchronizers = [];
         for (let i = 0; i < 5; i++) {
@@ -560,14 +559,18 @@ export const syncAllUsers = functions.runWith({
           if (userIds.length > 0) {
             const firebaseAuthUID = userIds.pop();
             synchronizers.push(
-                axios.post(getEnvironment().syncEndpoint, { firebaseAuthUID })
+                pubsub.topic('syncUser').publishMessage({
+                  json: {
+                    firebaseAuthUID
+                  }
+                }),
             );
           }
         }
         // Wait for all synchronizers in this batch to finish, then proceed to the next batch.
         console.log('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
 
-        await allSettled(synchronizers);
+        await Promise.all(synchronizers);
       }
 });
 
@@ -792,7 +795,13 @@ export const triggerNowPlayingDataFetch = functions.runWith({
               axios.post(getEnvironment().collectNowPlayingDataUrl, { firebaseAuthUID })
           );
         }
-        await allSettled(dataFetchers);
+        try {
+          await Promise.all(dataFetchers);
+        } catch (error) {
+          // If an error occurs we still need to delete the flag document.
+          // Catch the error so the flag document can be deleted.
+          console.error(error);
+        }
       }
       // We're done with all users.
       // Remove the flag and wait for another keep alive request.
