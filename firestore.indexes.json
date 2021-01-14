@@ -1,7 +1,7 @@
 {
   "indexes": [
     {
-      "collectionGroup": "tracks",
+      "collectionGroup": "short_term-tracks",
       "queryScope": "COLLECTION",
       "fields": [
         {
@@ -11,11 +11,33 @@
         {
           "fieldPath": "firstAppeared",
           "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "random",
+          "order": "DESCENDING"
         }
       ]
     },
     {
-      "collectionGroup": "tracks",
+      "collectionGroup": "medium_term-tracks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "count",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "firstAppeared",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "random",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "long_term-tracks",
       "queryScope": "COLLECTION",
       "fields": [
         {
