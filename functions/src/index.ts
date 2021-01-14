@@ -5,7 +5,11 @@ import axios, {AxiosResponse} from 'axios';
 import FieldValue = admin.firestore.FieldValue;
 import { getEnvironment } from "./environment";
 import { URLSearchParams } from 'url';
+import DocumentReference = admin.firestore.DocumentReference;
+import DocumentSnapshot = admin.firestore.DocumentSnapshot;
 const { PubSub } = require('@google-cloud/pubsub');
+
+const supportedSpotifyTimeRanges = ['long_term', 'medium_term', 'short_term'];
 
 admin.initializeApp();
 
@@ -22,16 +26,19 @@ const convertSpotifyTrackToHearTheSpearTrack = (spotifyTrack: any) => {
   }
 };
 
-const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
+const purgeListeningHistoryOfUser = async (firebaseAuthUID: string, spotifyTimeRange: string) => {
   // Get the user record from the database.
   const userDoc = await admin.firestore().collection('users').doc(firebaseAuthUID).get();
 
   const batch = admin.firestore().batch();
 
-  if (userDoc.data()!['tracks']) {
-    for (const trackId of userDoc.data()!['tracks']) {
+  // An array of all the track/artist docs that we edited.
+  const editedDocs: Array<DocumentReference> = [];
+
+  if (userDoc.data()![spotifyTimeRange + '-tracks']) {
+    for (const trackId of userDoc.data()![spotifyTimeRange + '-tracks']) {
       // Get a reference to the counter document for this track.
-      const trackDoc = admin.firestore().collection('tracks').doc(trackId);
+      const trackDoc = admin.firestore().collection(spotifyTimeRange + '-tracks').doc(trackId);
 
       if (!(await trackDoc.get()).exists) {
         console.warn('Expected track document to exist but it was not in the database: ' + trackId);
@@ -41,13 +48,14 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
       batch.update(trackDoc, {
         count: FieldValue.increment(-1)
       });
+      editedDocs.push(trackDoc);
     }
   }
 
-  if (userDoc.data()!['artists']) {
-    for (const artistId of userDoc.data()!['artists']) {
+  if (userDoc.data()![spotifyTimeRange + '-artists']) {
+    for (const artistId of userDoc.data()![spotifyTimeRange + '-artists']) {
       // Get a reference to the counter document for this artist.
-      const artistDoc = admin.firestore().collection('artists').doc(artistId);
+      const artistDoc = admin.firestore().collection(spotifyTimeRange + '-artists').doc(artistId);
       // Decrement the count by one, since this user's history is being purged.
       if (!(await artistDoc.get()).exists) {
         console.warn('Expected artist document to exist but it was not in the database: ' + artistId);
@@ -56,18 +64,34 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
       batch.update(artistDoc, {
         count: FieldValue.increment(-1)
       });
+      editedDocs.push(artistDoc);
     }
   }
 
   // Remove the tracks and artists from this user's individual record.
-  const update = {
-    artists: FieldValue.delete(),
-    tracks: FieldValue.delete()
-  };
+  const update: any = {};
+  update[spotifyTimeRange + '-artists'] = FieldValue.delete();
+  update[spotifyTimeRange + '-tracks'] = FieldValue.delete();
   batch.set(userDoc.ref, update, { merge: true });
 
   // Submit the database changes to Firebase.
   await batch.commit();
+
+
+  // Upon initial deployment the lists will be empty and there will be no need to run a transaction.
+  // In fact running transaction.getAll on an empty array will result in an error.
+  if (editedDocs.length > 0) {
+    // Now check to see if any of those docs have a count of zero. If so they can be deleted.
+    await admin.firestore().runTransaction(async transaction => {
+      const docs: Array<DocumentSnapshot<any>> = await transaction.getAll(...editedDocs); // 100 docs
+      // doc.exists just for an abundance of safety. It should never be false though.
+      const deleters = docs.filter(doc => doc.exists && doc.data().count < 1)
+          .map((doc: DocumentSnapshot) => transaction.delete(doc.ref));
+
+      await Promise.all(deleters);
+    });
+  }
+
 };
 
 /**
@@ -77,15 +101,16 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string) => {
  * and if necessary, invoke {@link renewSpotifyAuthToken}.
  * Purges old listening history automatically.
  * @param firebaseAuthUID self explanatory
+ * @param spotifyTimeRange for a list of valid timerange strings see spotify's top tracks endpoint documentation
  */
-const collectListeningHistory = async (firebaseAuthUID: string) => {
+const collectListeningHistory = async (firebaseAuthUID: string, spotifyTimeRange: string) => {
   /**
    * Returns the Spotify endpoint that holds recent listening history.
    * @param dataType acceptable data types are tracks, and artists.
    * @param limit the number of records to return, the maximum value is fifty.
    */
   const getSpotifyEndpoint = (dataType: string, limit: number = 50) =>
-      `https://api.spotify.com/v1/me/top/${dataType}?limit=${limit}&time_range=short_term`;
+      `https://api.spotify.com/v1/me/top/${dataType}?limit=${limit}&time_range=${spotifyTimeRange}`;
 
   // Get the user record from the database.
   const userDoc = await admin.firestore().collection('users').doc(firebaseAuthUID).get();
@@ -104,7 +129,7 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
     }
   };
 
-  await purgeListeningHistoryOfUser(firebaseAuthUID)
+  await purgeListeningHistoryOfUser(firebaseAuthUID, spotifyTimeRange)
 
   // Request the user's listening history from the Spotify Web API.
 
@@ -121,7 +146,7 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
     const trackId = track['uri'].split(':')[2];
     // A reference to the track counter document.
     // This contains a count of all the current users who frequently listen to this song.
-    const trackDocRef = admin.firestore().collection('tracks').doc(trackId);
+    const trackDocRef = admin.firestore().collection(spotifyTimeRange + '-tracks').doc(trackId);
 
     await admin.firestore().runTransaction(async (transaction) => {
       const trackDoc = await transaction.get(trackDocRef);
@@ -169,7 +194,7 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
     const artistId = artist['uri'].split(':')[2];
     // A reference to the counter document.
     // This contains a count of all the current users who frequently listen to this artist.
-    const doc = admin.firestore().collection('artists').doc(artistId);
+    const doc = admin.firestore().collection(spotifyTimeRange + '-artists').doc(artistId);
     const update = {
       // Increment the count by 1, as we have just discovered another frequent listener.
       count: FieldValue.increment(1),
@@ -192,12 +217,16 @@ const collectListeningHistory = async (firebaseAuthUID: string) => {
   // Store a list of the all the tracks and artists this user likes.
   // That way, we can decrement their counts if the user decides to disconnect their account or if we
   // get new data from Spotify.
-  const userRecordUpdate = {
-    // @ts-ignore
-    tracks: userFavoriteTracks.map(track => track['uri'].replace('spotify:track:', '')),
-    // @ts-ignore
-    artists: userFavoriteArtists.map(artist => artist['uri'].replace('spotify:artist:', ''))
-  };
+  const userRecordUpdate: any = {};
+
+  userRecordUpdate[spotifyTimeRange + '-tracks']
+      // @ts-ignore
+      = userFavoriteTracks.map(track => track['uri'].replace('spotify:track:', ''));
+
+  userRecordUpdate[spotifyTimeRange + '-artists']
+      // @ts-ignore
+      = userFavoriteArtists.map(artist => artist['uri'].replace('spotify:artist:', ''));
+
   batch.set(userDoc.ref, userRecordUpdate, { merge: true });
 
   // Submit the database changes to Firebase.
@@ -228,7 +257,11 @@ const renewSpotifyAuthToken = async (uid: string) => {
     // If no refresh token is found in the database then the user is considered "Dead".
     // Without a refresh token we can't request a new auth token from Spotify.
 
-    await purgeListeningHistoryOfUser(uid);
+    await Promise.all([
+      purgeListeningHistoryOfUser(uid, 'short_term'),
+      purgeListeningHistoryOfUser(uid, 'medium_term'),
+      purgeListeningHistoryOfUser(uid, 'long_term'),
+    ]);
     await admin.firestore().collection('users').doc(uid).delete();
 
     throw new Error('No refresh token found in database. This function is for renewing existing authorization. ' +
@@ -262,7 +295,11 @@ const renewSpotifyAuthToken = async (uid: string) => {
     if (error.response.data['error'] === 'invalid_grant') {
       console.error('Failed to refresh authorization for user: ' + uid);
       console.error(error);
-      await purgeListeningHistoryOfUser(uid);
+      await Promise.all([
+        purgeListeningHistoryOfUser(uid, 'short_term'),
+        purgeListeningHistoryOfUser(uid, 'medium_term'),
+        purgeListeningHistoryOfUser(uid, 'long_term'),
+      ]);
       await admin.firestore().collection('users').doc('uid').delete();
     }
 
@@ -384,20 +421,34 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
   await Promise.all([userRecordUpdateCompleted, essentialUserDataBackupComplete]);
 };
 
-const TOP_TRACKS_QUERY = admin.firestore().collection('tracks')
-    .orderBy('count', 'desc')
-    .orderBy('firstAppeared', 'desc')
-    .orderBy('random', 'desc')
-    .limit(50);
+const getTopTracksQuery = (spotifyTimeRange: string) => {
+  return admin.firestore().collection(spotifyTimeRange + '-tracks')
+      .orderBy('count', 'desc')
+      .orderBy('firstAppeared', 'desc')
+      .orderBy('random', 'desc')
+      .limit(50);
+}
 
 export const getFSUTopTracks = functions.https.onCall(async (data, context) => {
-  const { docs } = (await TOP_TRACKS_QUERY.get());
+  const { spotifyTimeRange } = data;
+
+  if (!supportedSpotifyTimeRanges.includes(spotifyTimeRange)) {
+    throw new Error('The client requested an unknown or unsupported time range: ' + spotifyTimeRange);
+  }
+
+  const { docs } = (await getTopTracksQuery(spotifyTimeRange).get());
 
   return docs.map(doc => doc.data());
 });
 
 export const getFSUTopArtists = functions.https.onCall(async (data, context) => {
-  const { docs } = (await admin.firestore().collection('artists')
+  const { spotifyTimeRange } = data;
+
+  if (!supportedSpotifyTimeRanges.includes(spotifyTimeRange)) {
+    throw new Error('The client requested an unknown or unsupported time range: ' + spotifyTimeRange);
+  }
+
+  const { docs } = (await admin.firestore().collection(spotifyTimeRange + '-artists')
       .orderBy('count', 'desc')
       .limit(50)
       .get());
@@ -437,8 +488,11 @@ export const getSignUpCount = functions.https.onCall(async (data, context) => {
   return response;
 });
 
-export const syncUser = functions.pubsub.topic('syncUser').onPublish((message, context) => {
-  const { firebaseAuthUID } = message.json;
+export const syncUser = functions.pubsub._topicWithOptions('syncUser', {
+  // Don't overload the Spotify API
+  maxInstances: 1
+}).onPublish((message, context) => {
+  const { firebaseAuthUID, spotifyTimeRange } = message.json;
   console.log('Syncing user' + firebaseAuthUID);
 
   // https://stackoverflow.com/questions/57149416/firebase-cloud-function-exits-with-code-16-what-is-error-code-16-and-where-can-i
@@ -446,7 +500,7 @@ export const syncUser = functions.pubsub.topic('syncUser').onPublish((message, c
   // Firebase will report a code 16 error if we do not notify it of ongoing promises.
   return admin.firestore().collection('users').doc(firebaseAuthUID).get()
       .then(() => renewSpotifyAuthToken(firebaseAuthUID))
-      .then(() => collectListeningHistory(firebaseAuthUID))
+      .then(() => collectListeningHistory(firebaseAuthUID, spotifyTimeRange))
       .then(() => {
         console.log('Successfully collected listening history from user: ' + firebaseAuthUID);
       })
@@ -458,13 +512,15 @@ export const syncUser = functions.pubsub.topic('syncUser').onPublish((message, c
       });
 });
 
-export const updateFSUTop50Playlist = functions
+export const updateSpotifyPlaylist = functions
     // Update the FSU Top 50 and Popular Artists data on a daily basis.
-    .pubsub.schedule('59 23 * * *')
-    .onRun(async (context) => {
+    .pubsub.topic('updateSpotifyPlaylist')
+    .onPublish(async (message, context) => {
       const duncan = await admin.auth().getUserByEmail('dbp19a@my.fsu.edu');
 
-      const playlistApiUrl = `https://api.spotify.com/v1/playlists/${getEnvironment().spotifyPlaylist}`;
+      const { spotifyTimeRange } = message.json;
+      const playlistId: string = getEnvironment().spotify.playlists[spotifyTimeRange];
+      const playlistApiUrl = `https://api.spotify.com/v1/playlists/${playlistId}`;
 
       await renewSpotifyAuthToken(duncan.uid);
 
@@ -498,11 +554,10 @@ export const updateFSUTop50Playlist = functions
           });
         }
 
-
         console.log('Done clearing playlist.');
 
         // Add the new tracks.
-        const { docs } = (await TOP_TRACKS_QUERY.get());
+        const { docs } = (await getTopTracksQuery(spotifyTimeRange).get());
         const uris = docs
             .map(doc => doc.data())
             .filter((data) => data['count'] > 1)
@@ -519,13 +574,42 @@ export const updateFSUTop50Playlist = functions
         console.error(error);
       }
 
-
-      console.log('Successfully updated Spotify Top 50 Playlist!');
+      console.log(`Successfully updated Spotify Top 50 Playlist (time range: ${spotifyTimeRange})`);
     });
-/**
- * Syncs all users concurrently.
- */
-export const syncAllUsers = functions.runWith({
+
+export const updateAllPlatformPlaylists = functions.pubsub.schedule('every 24 hours').onRun(async () => {
+  const pubsub = new PubSub({
+    projectId: process.env.GCLOUD_PROJECT,
+  });
+  const topic = pubsub.topic('updateSpotifyPlaylist');
+
+  await Promise.all(
+      supportedSpotifyTimeRanges
+          .map(spotifyTimeRange => ({ spotifyTimeRange }))
+          .map(payload => topic.publishMessage({ json: payload }))
+  );
+});
+
+const addUserSyncTasksToQueue = async (firebaseAuthUID: string, spotifyTimeRanges: string[] = supportedSpotifyTimeRanges) => {
+  const pubsub = new PubSub({
+    projectId: process.env.GCLOUD_PROJECT,
+  });
+
+  await Promise.all(
+      spotifyTimeRanges
+          .map(spotifyTimeRange => {
+                return pubsub.topic('syncUser').publishMessage({
+                  json: {
+                    spotifyTimeRange,
+                    firebaseAuthUID
+                  }
+                });
+              }
+          )
+  );
+}
+
+export const frequentRefreshTimerTask = functions.runWith({
       // The maximum timeout allowed by Firebase.
       timeoutSeconds: 540, // 9 minutes
       // The maximum memory capacity allowed by Firebase.
@@ -537,42 +621,27 @@ export const syncAllUsers = functions.runWith({
       const userIds = (await admin.firestore().collection('users').listDocuments())
           .map(user => user.id);
 
-      // The number of synchronizers that can be running simultaneously.
-      // If we run too many synchronizers at once we could hit Spotify's rate limit.
-      // Our synchronizers are programmed to retry failed requests, but a high number of retries might
-      // make the execution time exceed the Firebase function timeout.
-      // This number is basically a guess, because the Spotify docs provide no hard limits.
-      const concurrencyLimit = 5;
-      const numberOfUsersToSync = userIds.length;
-      // The number of batches of operations we will need to run in order to sync all of our users.
-      const batches = Math.ceil(numberOfUsersToSync / concurrencyLimit);
+      const synchronizers = userIds.map(id => addUserSyncTasksToQueue(id, ['short_term']))
 
-      const pubsub = new PubSub({
-        projectId: process.env.GCLOUD_PROJECT,
-      });
-
-      for (let batchNo = 0; batchNo < batches; batchNo++) {
-        const synchronizers = [];
-        for (let i = 0; i < 5; i++) {
-          // Make sure we're not out of users to sync.
-          // The array might be empty if this is the end of the last batch.
-          if (userIds.length > 0) {
-            const firebaseAuthUID = userIds.pop();
-            synchronizers.push(
-                pubsub.topic('syncUser').publishMessage({
-                  json: {
-                    firebaseAuthUID
-                  }
-                }),
-            );
-          }
-        }
-        // Wait for all synchronizers in this batch to finish, then proceed to the next batch.
-        console.log('Launching synchronizer batch ' + batchNo + ' (' + synchronizers.length + ' users)');
-
-        await Promise.all(synchronizers);
-      }
+      await Promise.all(synchronizers);
 });
+
+export const lessFrequentRefreshTimerTask = functions.runWith({
+  // The maximum timeout allowed by Firebase.
+  timeoutSeconds: 540, // 9 minutes
+  // The maximum memory capacity allowed by Firebase.
+  memory: '2GB'
+})
+    // Update the FSU Top 50 and Popular Artists data on a daily basis.
+    .pubsub.schedule('every 48 hours')
+    .onRun(async (context) => {
+      const userIds = (await admin.firestore().collection('users').listDocuments())
+          .map(user => user.id);
+
+      const synchronizers = userIds.map(id => addUserSyncTasksToQueue(id, ['medium_term','long_term']))
+
+      await Promise.all(synchronizers);
+    });
 
 // noinspection JSUnusedGlobalSymbols
 export const spotifyTemporaryCredentialsReceiver = functions.https.onRequest((request, response) => {
@@ -596,10 +665,7 @@ export const spotifyTemporaryCredentialsReceiver = functions.https.onRequest((re
   }
   // Attempt to obtain an access token using the temporary auth code.
   return newSpotifyAuthToken(spotifyAuthCode, firebaseAuthUID)
-      // Collect the listening history of the user immediately.
-      // That way they will see their music reflected in the rankings right off the bat.
-      // This will be especially useful while the user base is small.
-      .then(() => collectListeningHistory(firebaseAuthUID))
+      .then(() => addUserSyncTasksToQueue(firebaseAuthUID))
       // Show the user a success message and thank them for linking their account.
       .then(() => response.redirect(getEnvironment().frontendUrl + '?showContributionSuccessMessage=true'))
       .catch((error) => {
