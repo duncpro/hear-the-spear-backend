@@ -415,7 +415,8 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
 const getTopTracksQuery = (spotifyTimeRange: string) => {
   return admin.firestore().collection('favorites/' + spotifyTimeRange + '/tracks')
       .orderBy('count', 'desc')
-      .orderBy('firstAppeared', 'desc')
+      // We don't have enough users to do this yet.
+      // .orderBy('firstAppeared', 'desc')
       .orderBy('random', 'desc')
       .limit(50);
 }
