@@ -1,6 +1,20 @@
 {
   "indexes": [
     {
+      "collectionGroup": "short_term-artists",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "count",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "random",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "short_term-tracks",
       "queryScope": "COLLECTION",
       "fields": [

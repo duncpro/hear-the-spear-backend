@@ -202,7 +202,8 @@ const collectListeningHistory = async (firebaseAuthUID: string, spotifyTimeRange
       name: artist['name'],
       // Store a link to the artist's profile in case this is the first the artist has been recorded in our system.
       link: artist['external_urls']['spotify'],
-      profilePicture: null
+      profilePicture: null,
+      random: Math.round(Math.random() * Math.pow(10, 7))
     };
 
     // Store the artist's profile picture, in case this is the first it has been recorded in our system.
@@ -450,6 +451,7 @@ export const getFSUTopArtists = functions.https.onCall(async (data, context) => 
 
   const { docs } = (await admin.firestore().collection(spotifyTimeRange + '-artists')
       .orderBy('count', 'desc')
+      .orderBy('random', 'desc')
       .limit(50)
       .get());
 
