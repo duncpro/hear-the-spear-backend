@@ -453,7 +453,7 @@ export const getFSUTopArtists = functions.https.onCall(async (data, context) => 
       .limit(50)
       .get());
 
-  return docs.map(doc => doc.data()).filter((doc) => doc['count'] > 1);
+  return docs.map(doc => doc.data());
 });
 
 export const userDidSignup = functions.auth.user().onCreate(async () => {
