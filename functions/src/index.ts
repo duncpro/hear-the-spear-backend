@@ -12,8 +12,11 @@ const { PubSub } = require('@google-cloud/pubsub');
 const supportedSpotifyTimeRanges = ['long_term', 'medium_term', 'short_term'];
 
 admin.initializeApp();
+admin.firestore().settings({
+  ignoreUndefinedProperties: true
+});
 
-const convertSpotifyTrackToHearTheSpearTrack = (spotifyTrack: any) => {
+const convertSpotifyTrackToHearTheSpearTrack = (spotifyTrack: any, audioFeatures?: any) => {
   return {
     name: spotifyTrack['name'],
     artist: spotifyTrack['album']['artists'][0]['name'],
@@ -22,7 +25,10 @@ const convertSpotifyTrackToHearTheSpearTrack = (spotifyTrack: any) => {
     artMedium: spotifyTrack['album']['images'].pop()['url'],
     preview: spotifyTrack['preview_url'],
     link: spotifyTrack['external_urls']['spotify'],
-    spotifyUri: spotifyTrack['uri']
+    spotifyUri: spotifyTrack['uri'],
+    danceability: audioFeatures?.danceability,
+    energy: audioFeatures?.energy,
+    tempo: audioFeatures?.tempo
   }
 };
 
@@ -38,7 +44,7 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string, spotifyTimeR
   if (userDoc.data()![spotifyTimeRange + '-tracks']) {
     for (const trackId of userDoc.data()![spotifyTimeRange + '-tracks']) {
       // Get a reference to the counter document for this track.
-      const trackDoc = admin.firestore().collection(spotifyTimeRange + '-tracks').doc(trackId);
+      const trackDoc = admin.firestore().collection('favorites/' + spotifyTimeRange + '/tracks').doc(trackId);
 
       if (!(await trackDoc.get()).exists) {
         console.warn('Expected track document to exist but it was not in the database: ' + trackId);
@@ -55,7 +61,7 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string, spotifyTimeR
   if (userDoc.data()![spotifyTimeRange + '-artists']) {
     for (const artistId of userDoc.data()![spotifyTimeRange + '-artists']) {
       // Get a reference to the counter document for this artist.
-      const artistDoc = admin.firestore().collection(spotifyTimeRange + '-artists').doc(artistId);
+      const artistDoc = admin.firestore().collection('favorites/' + spotifyTimeRange + '/artists').doc(artistId);
       // Decrement the count by one, since this user's history is being purged.
       if (!(await artistDoc.get()).exists) {
         console.warn('Expected artist document to exist but it was not in the database: ' + artistId);
@@ -103,14 +109,17 @@ const purgeListeningHistoryOfUser = async (firebaseAuthUID: string, spotifyTimeR
  * @param firebaseAuthUID self explanatory
  * @param spotifyTimeRange for a list of valid timerange strings see spotify's top tracks endpoint documentation
  */
-const collectListeningHistory = async (firebaseAuthUID: string, spotifyTimeRange: string) => {
+const collectUserFavorites = async (firebaseAuthUID: string, spotifyTimeRange: string) => {
   /**
    * Returns the Spotify endpoint that holds recent listening history.
    * @param dataType acceptable data types are tracks, and artists.
    * @param limit the number of records to return, the maximum value is fifty.
    */
-  const getSpotifyEndpoint = (dataType: string, limit: number = 50) =>
+  const getUserFavoritesSpotifyEndpoint = (dataType: string, limit: number = 50) =>
       `https://api.spotify.com/v1/me/top/${dataType}?limit=${limit}&time_range=${spotifyTimeRange}`;
+
+  // Example Spotify Track URI: spotify:track:12345
+  const getSpotifyTrackId = (spotifyTrack: any) => spotifyTrack['uri'].split(':')[2];
 
   // Get the user record from the database.
   const userDoc = await admin.firestore().collection('users').doc(firebaseAuthUID).get();
@@ -134,67 +143,48 @@ const collectListeningHistory = async (firebaseAuthUID: string, spotifyTimeRange
   // Request the user's listening history from the Spotify Web API.
 
   const [userFavoriteTracksResponse, userFavoriteArtistsResponse] = await Promise.all([
-      axios.get(getSpotifyEndpoint('tracks'), httpClientConfig),
-      axios.get(getSpotifyEndpoint('artists'), httpClientConfig),
+      axios.get(getUserFavoritesSpotifyEndpoint('tracks'), httpClientConfig),
+      axios.get(getUserFavoritesSpotifyEndpoint('artists'), httpClientConfig),
   ]);
 
-  const userFavoriteTracks = userFavoriteTracksResponse.data['items'];
-  const userFavoriteArtists = userFavoriteArtistsResponse.data['items'];
+  const userFavoriteTracks: Array<any> = userFavoriteTracksResponse.data['items'];
+  const userFavoriteArtists: Array<any> = userFavoriteArtistsResponse.data['items'];
 
-  for (const track of userFavoriteTracks) {
-    // Example Spotify Track URI: spotify:track:12345
-    const trackId = track['uri'].split(':')[2];
-    // A reference to the track counter document.
-    // This contains a count of all the current users who frequently listen to this song.
-    const trackDocRef = admin.firestore().collection(spotifyTimeRange + '-tracks').doc(trackId);
-
-    await admin.firestore().runTransaction(async (transaction) => {
-      const trackDoc = await transaction.get(trackDocRef);
-      const update: any = {
-        // Increment the count by 1, as we have just discovered another frequent listener.
-        count: FieldValue.increment(1),
-        ...convertSpotifyTrackToHearTheSpearTrack(track),
-
-        // Include a 7 digit random number in the track document. This number will allow
-        // us to pull documents from the database in a completely random order (if desired).
-        random: Math.round(Math.random() * Math.pow(10, 7))
-      };
-
-      // collectListeningHistory() is invoked by syncAllUsers() many times in quick succession. By
-      // truncating the date to the nearest hour we prevent the order in which users are processed
-      // from effecting the order in which songs appear on the list.
-      const truncatedNow = new Date(Date.now());
-      truncatedNow.setMilliseconds(0);
-      truncatedNow.setSeconds(0);
-      truncatedNow.setMinutes(0);
-
-      // firstAppeared is the time that the track got one listener.
-      // Tracks whose listener count goes from 0 -> 1 have their firstAppearedValue reset.
-      // When polling the database the returned tracks are ordered first by listener count and
-      // then by appearance. This means that the newer tracks are given priority over
-      // older tracks, keeping the list fresher.
-      if (trackDoc.exists) {
-        if (trackDoc.data()!.count) { // Check if count === 0 but this is safer
-          update.firstAppeared = truncatedNow.valueOf();
-        }
-      } else {
-        update.firstAppeared = truncatedNow.valueOf();
-      }
-
-      transaction.update(trackDocRef, update, { merge: true });
-    });
-  }
+  const allAudioFeatures: Array<any> = (await axios
+      .get(`https://api.spotify.com/v1/audio-features?ids=${userFavoriteTracks.map(getSpotifyTrackId).join(',')}`,
+          httpClientConfig)).data.audio_features;
 
   // Create a new database transaction.
   // This will contain all the changes we are about to make.
   const batch = admin.firestore().batch();
+
+  for (let i = 0; i < userFavoriteTracks.length; i++) {
+    const track = userFavoriteTracks[i];
+    const trackId = getSpotifyTrackId(track);
+
+    // A reference to the track counter document.
+    // This contains a count of all the current users who frequently listen to this song.
+    const trackDocRef = admin.firestore().collection('favorites/' + spotifyTimeRange + '/tracks').doc(trackId);
+
+    const update: any = {
+      // Increment the count by 1, as we have just discovered another frequent listener.
+      count: FieldValue.increment(1),
+      ...convertSpotifyTrackToHearTheSpearTrack(track, allAudioFeatures[i]),
+
+      // Include a 7 digit random number in the track document. This number will allow
+      // us to pull documents from the database in a completely random order (if desired).
+      random: Math.round(Math.random() * Math.pow(10, 7)),
+    };
+
+    batch.set(trackDocRef, update, { merge: true });
+  }
 
   for (const artist of userFavoriteArtists) {
     // Example Spotify Artist URI: spotify:artist:12345
     const artistId = artist['uri'].split(':')[2];
     // A reference to the counter document.
     // This contains a count of all the current users who frequently listen to this artist.
-    const doc = admin.firestore().collection(spotifyTimeRange + '-artists').doc(artistId);
+    const doc = admin.firestore().collection('favorites/' + spotifyTimeRange + '/artists').doc(artistId);
     const update = {
       // Increment the count by 1, as we have just discovered another frequent listener.
       count: FieldValue.increment(1),
@@ -423,7 +413,7 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
 };
 
 const getTopTracksQuery = (spotifyTimeRange: string) => {
-  return admin.firestore().collection(spotifyTimeRange + '-tracks')
+  return admin.firestore().collection('favorites/' + spotifyTimeRange + '/tracks')
       .orderBy('count', 'desc')
       .orderBy('firstAppeared', 'desc')
       .orderBy('random', 'desc')
@@ -449,7 +439,7 @@ export const getFSUTopArtists = functions.https.onCall(async (data, context) => 
     throw new Error('The client requested an unknown or unsupported time range: ' + spotifyTimeRange);
   }
 
-  const { docs } = (await admin.firestore().collection(spotifyTimeRange + '-artists')
+  const { docs } = (await admin.firestore().collection('favorites/' + spotifyTimeRange + '/artists')
       .orderBy('count', 'desc')
       .orderBy('random', 'desc')
       .limit(50)
@@ -502,7 +492,7 @@ export const syncUser = functions.pubsub._topicWithOptions('syncUser', {
   // Firebase will report a code 16 error if we do not notify it of ongoing promises.
   return admin.firestore().collection('users').doc(firebaseAuthUID).get()
       .then(() => renewSpotifyAuthToken(firebaseAuthUID))
-      .then(() => collectListeningHistory(firebaseAuthUID, spotifyTimeRange))
+      .then(() => collectUserFavorites(firebaseAuthUID, spotifyTimeRange))
       .then(() => {
         console.log('Successfully collected listening history from user: ' + firebaseAuthUID);
       })
@@ -667,7 +657,14 @@ export const spotifyTemporaryCredentialsReceiver = functions.https.onRequest((re
   }
   // Attempt to obtain an access token using the temporary auth code.
   return newSpotifyAuthToken(spotifyAuthCode, firebaseAuthUID)
-      .then(() => addUserSyncTasksToQueue(firebaseAuthUID))
+
+      // The first page that the user will see after signing up is the short term top tracks listing.
+      // Before redirecting the user back to the website collect the user's favorites and store them in the
+      // database. This way user will immediately see their music reflected in the listing.
+      .then(() => collectUserFavorites(firebaseAuthUID, 'short_term'))
+      // Collect the user's long term and medium term favorites while they are is browsing the short
+      // term track list.
+      .then(() => addUserSyncTasksToQueue(firebaseAuthUID, ['long_term', 'medium_term']))
       // Show the user a success message and thank them for linking their account.
       .then(() => response.redirect(getEnvironment().frontendUrl + '?showContributionSuccessMessage=true'))
       .catch((error) => {
@@ -873,3 +870,22 @@ export const triggerNowPlayingDataFetch = functions.runWith({
       // Remove the flag and wait for another keep alive request.
       await isAlreadyRunningDocRef.delete();
 });
+
+/**
+ * Save the time that each new track document is created in the database.
+ * Track documents are purged when their count falls below 1 and created when their count
+ * increases from 0 to 1. This function records the time that the track got its "first listener".
+ */
+export const recordFirstAppearance = functions.firestore.document('favorites/{spotifyTimeRange}/tracks/{trackId}').onCreate(async (snapshot, context) => {
+  // collectUserFavorites() is invoked by syncAllUsers() many times in quick succession. By
+  // truncating the date to the nearest hour we prevent the order in which users are processed
+  // from effecting the order in which songs appear on the list.
+  const truncatedCT = snapshot.createTime.toDate();
+  truncatedCT.setMilliseconds(0);
+  truncatedCT.setSeconds(0);
+  truncatedCT.setMinutes(0);
+
+  await snapshot.ref.set({
+    firstAppeared: truncatedCT.valueOf()
+  }, { merge: true });
+})

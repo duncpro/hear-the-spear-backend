@@ -1,7 +1,7 @@
 {
   "indexes": [
     {
-      "collectionGroup": "short_term-artists",
+      "collectionGroup": "artists",
       "queryScope": "COLLECTION",
       "fields": [
         {
@@ -15,43 +15,7 @@
       ]
     },
     {
-      "collectionGroup": "short_term-tracks",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "count",
-          "order": "DESCENDING"
-        },
-        {
-          "fieldPath": "firstAppeared",
-          "order": "DESCENDING"
-        },
-        {
-          "fieldPath": "random",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "medium_term-tracks",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "count",
-          "order": "DESCENDING"
-        },
-        {
-          "fieldPath": "firstAppeared",
-          "order": "DESCENDING"
-        },
-        {
-          "fieldPath": "random",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "long_term-tracks",
+      "collectionGroup": "tracks",
       "queryScope": "COLLECTION",
       "fields": [
         {
@@ -68,6 +32,6 @@
         }
       ]
     }
-  ],
+    ],
   "fieldOverrides": []
 }
