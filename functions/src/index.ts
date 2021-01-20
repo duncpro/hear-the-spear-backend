@@ -28,7 +28,8 @@ const convertSpotifyTrackToHearTheSpearTrack = (spotifyTrack: any, audioFeatures
     spotifyUri: spotifyTrack['uri'],
     danceability: audioFeatures?.danceability,
     energy: audioFeatures?.energy,
-    tempo: audioFeatures?.tempo
+    tempo: audioFeatures?.tempo,
+    isRemix: spotifyTrack.name.includes('Remix')
   }
 };
 
@@ -872,21 +873,21 @@ export const triggerNowPlayingDataFetch = functions.runWith({
       await isAlreadyRunningDocRef.delete();
 });
 
-/**
- * Save the time that each new track document is created in the database.
- * Track documents are purged when their count falls below 1 and created when their count
- * increases from 0 to 1. This function records the time that the track got its "first listener".
- */
-export const recordFirstAppearance = functions.firestore.document('favorites/{spotifyTimeRange}/tracks/{trackId}').onCreate(async (snapshot, context) => {
-  // collectUserFavorites() is invoked by syncAllUsers() many times in quick succession. By
-  // truncating the date to the nearest hour we prevent the order in which users are processed
-  // from effecting the order in which songs appear on the list.
-  const truncatedCT = snapshot.createTime.toDate();
-  truncatedCT.setMilliseconds(0);
-  truncatedCT.setSeconds(0);
-  truncatedCT.setMinutes(0);
-
-  await snapshot.ref.set({
-    firstAppeared: truncatedCT.valueOf()
-  }, { merge: true });
-})
+// /**
+//  * Save the time that each new track document is created in the database.
+//  * Track documents are purged when their count falls below 1 and created when their count
+//  * increases from 0 to 1. This function records the time that the track got its "first listener".
+//  */
+// export const recordFirstAppearance = functions.firestore.document('favorites/{spotifyTimeRange}/tracks/{trackId}').onCreate(async (snapshot, context) => {
+//   // collectUserFavorites() is invoked by syncAllUsers() many times in quick succession. By
+//   // truncating the date to the nearest hour we prevent the order in which users are processed
+//   // from effecting the order in which songs appear on the list.
+//   const truncatedCT = snapshot.createTime.toDate();
+//   truncatedCT.setMilliseconds(0);
+//   truncatedCT.setSeconds(0);
+//   truncatedCT.setMinutes(0);
+//
+//   await snapshot.ref.set({
+//     firstAppeared: truncatedCT.valueOf()
+//   }, { merge: true });
+// })
