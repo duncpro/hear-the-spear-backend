@@ -528,9 +528,9 @@ export const updateSpotifyPlaylist = functions
 
       try {
         // Get all the tracks currently stored in the playlist.
-        let currentPlaylistState = (await axios.get(playlistApiUrl + '?fields=snapshot_id,tracks(total)&market=ES', httpClientConfig)).data;
+        const currentPlaylistState = (await axios.get(playlistApiUrl + '?fields=snapshot_id,tracks(total)&market=ES', httpClientConfig)).data;
 
-        let positions = [];
+        const positions = [];
         for (let i = 0; i < currentPlaylistState.tracks.total; i++) {
           positions.push(i);
         }
