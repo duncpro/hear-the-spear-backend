@@ -416,8 +416,6 @@ export const newSpotifyAuthToken = async (spotifyAuthCode: string, firebaseAuthU
 const getTopTracksQuery = (spotifyTimeRange: string) => {
   return admin.firestore().collection('favorites/' + spotifyTimeRange + '/tracks')
       .orderBy('count', 'desc')
-      // We don't have enough users to do this yet.
-      // .orderBy('firstAppeared', 'desc')
       .orderBy('random', 'desc')
       .limit(50);
 }
@@ -570,6 +568,16 @@ export const updateSpotifyPlaylist = functions
 
       console.log(`Successfully updated Spotify Top 50 Playlist (time range: ${spotifyTimeRange})`);
     });
+
+/**
+ * On some very rare occasions the now playing flag will get stuck because the now playing refresh task which created
+ * it, crashed. To remedy this until I have time to find the issue, this will have to do.
+ */
+export const clearNowPlayingFlag = functions.pubsub.schedule('every 24 hours').onRun(async () => {
+  await admin.firestore()
+      .collection('flags')
+      .doc('fetchingNowPlayingData').delete()
+})
 
 export const updateAllPlatformPlaylists = functions.pubsub.schedule('every 24 hours').onRun(async () => {
   const pubsub = new PubSub({
@@ -872,22 +880,3 @@ export const triggerNowPlayingDataFetch = functions.runWith({
       // Remove the flag and wait for another keep alive request.
       await isAlreadyRunningDocRef.delete();
 });
-
-// /**
-//  * Save the time that each new track document is created in the database.
-//  * Track documents are purged when their count falls below 1 and created when their count
-//  * increases from 0 to 1. This function records the time that the track got its "first listener".
-//  */
-// export const recordFirstAppearance = functions.firestore.document('favorites/{spotifyTimeRange}/tracks/{trackId}').onCreate(async (snapshot, context) => {
-//   // collectUserFavorites() is invoked by syncAllUsers() many times in quick succession. By
-//   // truncating the date to the nearest hour we prevent the order in which users are processed
-//   // from effecting the order in which songs appear on the list.
-//   const truncatedCT = snapshot.createTime.toDate();
-//   truncatedCT.setMilliseconds(0);
-//   truncatedCT.setSeconds(0);
-//   truncatedCT.setMinutes(0);
-//
-//   await snapshot.ref.set({
-//     firstAppeared: truncatedCT.valueOf()
-//   }, { merge: true });
-// })
